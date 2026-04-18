@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-04-18
+
+### Working
+
+- Weapon awakening
+- Consumable item selling
+- `--latest-scene` CLI flag for resuming from the most recent quest scene on startup
+- Docker support (Dockerfile, docker-compose, entrypoint)
+- GitHub Actions CI for Docker image builds
+
+### Fixed
+
+- Locale fallback MD5 validation for ja/ko -> en asset candidates
+- UTF-8 handling for non-ASCII characters in asset path processing
+- Tutorial progress no longer overwrites existing progress unless the new phase is greater
+- Repeated weapon story unlock notifications — diffs now only send changed stories
+- Unique key generation for weapon grants to prevent overwrites in gacha/rewards
+- Missing `IUserWeaponStory` in `startedGameStartTables`
+- Max level evaluation in costume `EnhanceActiveSkill`
+
 ## 2026-04-11
 
 ### Working

@@ -1,7 +1,7 @@
 # Lunar Tear
 
 Private server research project for a certain discontinued mobile game.
-Discord server: https://discord.gg/G3anrfcV
+Discord server: https://discord.gg/MZAf5aVkJG
 
 ## How To Launch The Server
 

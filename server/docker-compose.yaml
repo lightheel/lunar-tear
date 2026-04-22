@@ -4,6 +4,7 @@ services:
   server:
     build: .
     image: kretts/lunar-tear:latest
+    restart: unless-stopped
     environment:
       LUNAR_LISTEN: 0.0.0.0:8003
       LUNAR_PUBLIC_ADDR: 127.0.0.1:8003
@@ -23,6 +24,7 @@ services:
       context: .
       dockerfile: Dockerfile.cdn
     image: kretts/octo-cdn:latest
+    restart: unless-stopped
     command: ["--listen", "0.0.0.0:8080", "--public-addr", "10.0.2.2:8080"]
     volumes:
       - ./assets:/opt/octo-cdn/assets
@@ -34,6 +36,7 @@ services:
       context: .
       dockerfile: Dockerfile.auth
     image: kretts/auth-server:latest
+    restart: unless-stopped
     command: ["--listen", "0.0.0.0:3000", "--db", "db/auth.db"]
     volumes:
       - ./db:/opt/auth-server/db

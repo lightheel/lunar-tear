@@ -40,6 +40,7 @@ func main() {
 	// lunar-tear (grpc) flags
 	grpcListen := flag.String("grpc.listen", "0.0.0.0:8003", "lunar-tear gRPC listen address (host:port)")
 	grpcPublicAddr := flag.String("grpc.public-addr", "10.0.2.2:8003", "lunar-tear externally-reachable address")
+	grpcDB := flag.String("grpc.db", "db/game.db", "lunar-tear SQLite database path")
 	grpcOctoURL := flag.String("grpc.octo-url", "", "Octo CDN base URL passed to lunar-tear (default: derived from cdn.public-addr)")
 	grpcAuthURL := flag.String("grpc.auth-url", "", "auth server base URL passed to lunar-tear (default: derived from auth.listen)")
 
@@ -87,6 +88,7 @@ func main() {
 			cmd: exec.CommandContext(ctx, "go", "run", "./cmd/lunar-tear",
 				"--listen", *grpcListen,
 				"--public-addr", *grpcPublicAddr,
+				"--db", *grpcDB,
 				"--octo-url", *grpcOctoURL,
 				"--auth-url", *grpcAuthURL,
 			),

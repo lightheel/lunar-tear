@@ -330,31 +330,84 @@ func ApplyDeckReplacement(user *UserState, deckType model.DeckType, userDeckNumb
 		deck.Power = 100
 	}
 
-	uuidPtrs := []*string{&deck.UserDeckCharacterUuid01, &deck.UserDeckCharacterUuid02, &deck.UserDeckCharacterUuid03}
-	for i, uuidPtr := range uuidPtrs {
+	for _, oldUuid := range []string{deck.UserDeckCharacterUuid01, deck.UserDeckCharacterUuid02, deck.UserDeckCharacterUuid03} {
+		if oldUuid == "" {
+			continue
+		}
+		delete(user.DeckCharacters, oldUuid)
+		delete(user.DeckSubWeapons, oldUuid)
+		delete(user.DeckParts, oldUuid)
+	}
+
+	var newUuids [3]string
+	for i := range 3 {
 		if i >= len(slots) || slots[i].UserCostumeUuid == "" {
-			*uuidPtr = ""
 			continue
 		}
 		slot := slots[i]
-		dcUuid := *uuidPtr
-		if dcUuid == "" {
-			dcUuid = uuid.New().String()
+		dcUuid := uuid.New().String()
+		user.DeckCharacters[dcUuid] = DeckCharacterState{
+			UserDeckCharacterUuid: dcUuid,
+			UserCostumeUuid:       slot.UserCostumeUuid,
+			MainUserWeaponUuid:    slot.MainUserWeaponUuid,
+			UserCompanionUuid:     slot.UserCompanionUuid,
+			UserThoughtUuid:       slot.UserThoughtUuid,
+			DressupCostumeId:      slot.DressupCostumeId,
+			LatestVersion:         nowMillis,
 		}
-		dc := user.DeckCharacters[dcUuid]
-		dc.UserDeckCharacterUuid = dcUuid
-		dc.UserCostumeUuid = slot.UserCostumeUuid
-		dc.MainUserWeaponUuid = slot.MainUserWeaponUuid
-		dc.UserCompanionUuid = slot.UserCompanionUuid
-		dc.UserThoughtUuid = slot.UserThoughtUuid
-		dc.DressupCostumeId = slot.DressupCostumeId
-		dc.LatestVersion = nowMillis
-		user.DeckCharacters[dcUuid] = dc
 		user.DeckSubWeapons[dcUuid] = slot.SubWeaponUuids
 		user.DeckParts[dcUuid] = slot.PartsUuids
-		*uuidPtr = dcUuid
+		newUuids[i] = dcUuid
 	}
 
+	deck.UserDeckCharacterUuid01 = newUuids[0]
+	deck.UserDeckCharacterUuid02 = newUuids[1]
+	deck.UserDeckCharacterUuid03 = newUuids[2]
 	deck.LatestVersion = nowMillis
 	user.Decks[deckKey] = deck
+}
+
+func RemoveDeckData(user *UserState, deckType model.DeckType, userDeckNumber int32) {
+	deckKey := DeckKey{DeckType: deckType, UserDeckNumber: userDeckNumber}
+	deck, ok := user.Decks[deckKey]
+	if !ok {
+		return
+	}
+	for _, dcUuid := range []string{deck.UserDeckCharacterUuid01, deck.UserDeckCharacterUuid02, deck.UserDeckCharacterUuid03} {
+		if dcUuid == "" {
+			continue
+		}
+		delete(user.DeckCharacters, dcUuid)
+		delete(user.DeckSubWeapons, dcUuid)
+		delete(user.DeckParts, dcUuid)
+	}
+	delete(user.Decks, deckKey)
+}
+
+func ReadDeckSlots(user *UserState, deckType model.DeckType, userDeckNumber int32) []DeckCharacterInput {
+	deckKey := DeckKey{DeckType: deckType, UserDeckNumber: userDeckNumber}
+	deck, ok := user.Decks[deckKey]
+	if !ok {
+		return nil
+	}
+	slots := make([]DeckCharacterInput, 3)
+	for i, dcUuid := range []string{deck.UserDeckCharacterUuid01, deck.UserDeckCharacterUuid02, deck.UserDeckCharacterUuid03} {
+		if dcUuid == "" {
+			continue
+		}
+		dc, ok := user.DeckCharacters[dcUuid]
+		if !ok {
+			continue
+		}
+		slots[i] = DeckCharacterInput{
+			UserCostumeUuid:    dc.UserCostumeUuid,
+			MainUserWeaponUuid: dc.MainUserWeaponUuid,
+			SubWeaponUuids:     user.DeckSubWeapons[dcUuid],
+			PartsUuids:         user.DeckParts[dcUuid],
+			UserCompanionUuid:  dc.UserCompanionUuid,
+			UserThoughtUuid:    dc.UserThoughtUuid,
+			DressupCostumeId:   dc.DressupCostumeId,
+		}
+	}
+	return slots
 }

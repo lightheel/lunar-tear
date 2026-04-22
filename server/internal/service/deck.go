@@ -213,3 +213,43 @@ func (s *DeckServiceServer) ReplaceMultiDeck(ctx context.Context, req *pb.Replac
 
 	return &pb.ReplaceMultiDeckResponse{}, nil
 }
+
+func (s *DeckServiceServer) RemoveDeck(ctx context.Context, req *pb.RemoveDeckRequest) (*pb.RemoveDeckResponse, error) {
+	log.Printf("[DeckService] RemoveDeck: deckType=%d deckNumber=%d", req.DeckType, req.UserDeckNumber)
+	userId := CurrentUserId(ctx, s.users, s.sessions)
+
+	s.users.UpdateUser(userId, func(user *store.UserState) {
+		store.RemoveDeckData(user, model.DeckType(req.DeckType), req.UserDeckNumber)
+	})
+
+	return &pb.RemoveDeckResponse{}, nil
+}
+
+func (s *DeckServiceServer) CopyDeck(ctx context.Context, req *pb.CopyDeckRequest) (*pb.CopyDeckResponse, error) {
+	log.Printf("[DeckService] CopyDeck: from deckType=%d deckNumber=%d -> to deckType=%d deckNumber=%d",
+		req.FromDeckType, req.FromUserDeckNumber, req.ToDeckType, req.ToUserDeckNumber)
+	userId := CurrentUserId(ctx, s.users, s.sessions)
+
+	var resultType int32
+	s.users.UpdateUser(userId, func(user *store.UserState) {
+		slots := store.ReadDeckSlots(user, model.DeckType(req.FromDeckType), req.FromUserDeckNumber)
+		if slots == nil {
+			return
+		}
+
+		nowMillis := gametime.NowMillis()
+		fromKey := store.DeckKey{DeckType: model.DeckType(req.FromDeckType), UserDeckNumber: req.FromUserDeckNumber}
+		srcName := user.Decks[fromKey].Name
+
+		store.ApplyDeckReplacement(user, model.DeckType(req.ToDeckType), req.ToUserDeckNumber, slots, nowMillis)
+
+		toKey := store.DeckKey{DeckType: model.DeckType(req.ToDeckType), UserDeckNumber: req.ToUserDeckNumber}
+		deck := user.Decks[toKey]
+		deck.Name = srcName
+		user.Decks[toKey] = deck
+
+		resultType = 1
+	})
+
+	return &pb.CopyDeckResponse{ResultType: resultType}, nil
+}

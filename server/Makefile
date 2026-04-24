@@ -35,7 +35,7 @@ build-dev:
 
 build-all:
 ifeq ($(OS),Windows_NT)
-	if not exist bin mkdir bin
+	cmd /C "if not exist bin mkdir bin"
 else
 	mkdir -p bin
 endif
@@ -46,7 +46,7 @@ endif
 
 clean:
 ifeq ($(OS),Windows_NT)
-	if exist bin rmdir /s /q bin
+	cmd /C "if exist bin rmdir /s /q bin"
 else
 	rm -rf bin
 endif
@@ -56,7 +56,7 @@ dev:
 
 migrate:
 ifeq ($(OS),Windows_NT)
-	if not exist db mkdir db
+	cmd /C "if not exist db mkdir db"
 else
 	mkdir -p db
 endif

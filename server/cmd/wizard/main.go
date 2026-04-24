@@ -290,7 +290,11 @@ func runProtoc() {
 
 func runMigrate() {
 	_ = spinner.New().Title("  Running migrations...").Action(func() {
-		runQuiet(exec.Command(toolPaths["make"], "migrate", "GOOSE="+toolPaths["goose"]), "database migration")
+		if err := os.MkdirAll("db", 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "  Failed to create db/: %v\n", err)
+			os.Exit(1)
+		}
+		runQuiet(exec.Command(toolPaths["goose"], "-dir", "migrations", "-allow-missing", "sqlite3", "db/game.db", "up"), "database migration")
 	}).Run()
 }
 

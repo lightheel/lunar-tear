@@ -4,24 +4,29 @@ import (
 	"context"
 
 	pb "lunar-tear/server/gen/proto"
+	"lunar-tear/server/internal/gametime"
 	"lunar-tear/server/internal/model"
-	"lunar-tear/server/internal/store"
+	"lunar-tear/server/internal/runtime"
 )
 
 type BannerServiceServer struct {
 	pb.UnimplementedBannerServiceServer
-	catalog []store.GachaCatalogEntry
+	holder *runtime.Holder
 }
 
-func NewBannerServiceServer(catalog []store.GachaCatalogEntry) *BannerServiceServer {
-	return &BannerServiceServer{catalog: catalog}
+func NewBannerServiceServer(holder *runtime.Holder) *BannerServiceServer {
+	return &BannerServiceServer{holder: holder}
 }
 
 func (s *BannerServiceServer) GetMamaBanner(ctx context.Context, req *pb.GetMamaBannerRequest) (*pb.GetMamaBannerResponse, error) {
-	catalog := s.catalog
+	catalog := s.holder.Get().GachaEntries
+	nowMillis := gametime.NowMillis()
 	var termLimited []*pb.GachaBanner
 	var latestChapter *pb.GachaBanner
 	for _, entry := range catalog {
+		if !gachaActiveAt(entry, nowMillis) {
+			continue
+		}
 		if entry.GachaLabelType == model.GachaLabelPortalCage || entry.GachaLabelType == model.GachaLabelRecycle {
 			continue
 		}

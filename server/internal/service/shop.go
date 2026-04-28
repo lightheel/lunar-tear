@@ -9,6 +9,7 @@ import (
 	"lunar-tear/server/internal/gametime"
 	"lunar-tear/server/internal/masterdata"
 	"lunar-tear/server/internal/model"
+	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -18,23 +19,25 @@ type ShopServiceServer struct {
 	pb.UnimplementedShopServiceServer
 	users    store.UserRepository
 	sessions store.SessionRepository
-	catalog  *masterdata.ShopCatalog
-	granter  *store.PossessionGranter
+	holder   *runtime.Holder
 }
 
-func NewShopServiceServer(users store.UserRepository, sessions store.SessionRepository, catalog *masterdata.ShopCatalog, granter *store.PossessionGranter) *ShopServiceServer {
-	return &ShopServiceServer{users: users, sessions: sessions, catalog: catalog, granter: granter}
+func NewShopServiceServer(users store.UserRepository, sessions store.SessionRepository, holder *runtime.Holder) *ShopServiceServer {
+	return &ShopServiceServer{users: users, sessions: sessions, holder: holder}
 }
 
 func (s *ShopServiceServer) Buy(ctx context.Context, req *pb.BuyRequest) (*pb.BuyResponse, error) {
 	log.Printf("[ShopService] Buy: shopId=%d items=%v", req.ShopId, req.ShopItems)
 
+	cat := s.holder.Get()
+	catalog := cat.Shop
+	granter := cat.QuestHandler.Granter
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
 	_, err := s.users.UpdateUser(userId, func(user *store.UserState) {
 		for shopItemId, qty := range req.ShopItems {
-			item, ok := s.catalog.Items[shopItemId]
+			item, ok := catalog.Items[shopItemId]
 			if !ok {
 				log.Printf("[ShopService] Buy: unknown shopItemId=%d, skipping", shopItemId)
 				continue
@@ -46,8 +49,8 @@ func (s *ShopServiceServer) Buy(ctx context.Context, req *pb.BuyRequest) (*pb.Bu
 				continue
 			}
 
-			for _, content := range s.catalog.Contents[shopItemId] {
-				s.granter.GrantFull(user,
+			for _, content := range catalog.Contents[shopItemId] {
+				granter.GrantFull(user,
 					model.PossessionType(content.PossessionType),
 					content.PossessionId,
 					content.Count*qty,
@@ -55,7 +58,7 @@ func (s *ShopServiceServer) Buy(ctx context.Context, req *pb.BuyRequest) (*pb.Bu
 				)
 			}
 
-			s.applyContentEffects(user, shopItemId, qty, nowMillis)
+			applyShopContentEffects(catalog, user, shopItemId, qty, nowMillis)
 
 			si := user.ShopItems[shopItemId]
 			si.ShopItemId = shopItemId
@@ -76,12 +79,13 @@ func (s *ShopServiceServer) Buy(ctx context.Context, req *pb.BuyRequest) (*pb.Bu
 func (s *ShopServiceServer) RefreshUserData(ctx context.Context, req *pb.RefreshRequest) (*pb.RefreshResponse, error) {
 	log.Printf("[ShopService] RefreshUserData: isGemUsed=%v", req.IsGemUsed)
 
+	catalog := s.holder.Get().Shop
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
 	_, err := s.users.UpdateUser(userId, func(user *store.UserState) {
-		if len(user.ShopReplaceableLineup) == 0 && len(s.catalog.ItemShopPool) > 0 {
-			for i, itemId := range s.catalog.ItemShopPool {
+		if len(user.ShopReplaceableLineup) == 0 && len(catalog.ItemShopPool) > 0 {
+			for i, itemId := range catalog.ItemShopPool {
 				slot := int32(i + 1)
 				user.ShopReplaceableLineup[slot] = store.UserShopReplaceableLineupState{
 					SlotNumber:    slot,
@@ -93,7 +97,7 @@ func (s *ShopServiceServer) RefreshUserData(ctx context.Context, req *pb.Refresh
 		if req.IsGemUsed {
 			user.ShopReplaceable.LineupUpdateCount++
 			user.ShopReplaceable.LatestLineupUpdateDatetime = nowMillis
-			for _, itemId := range s.catalog.ItemShopPool {
+			for _, itemId := range catalog.ItemShopPool {
 				if si, ok := user.ShopItems[itemId]; ok {
 					si.BoughtCount = 0
 					si.LatestVersion = nowMillis
@@ -120,11 +124,14 @@ func (s *ShopServiceServer) CreatePurchaseTransaction(ctx context.Context, req *
 	log.Printf("[ShopService] CreatePurchaseTransaction: shopId=%d shopItemId=%d productId=%s",
 		req.ShopId, req.ShopItemId, req.ProductId)
 
+	cat := s.holder.Get()
+	catalog := cat.Shop
+	granter := cat.QuestHandler.Granter
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
 	_, err := s.users.UpdateUser(userId, func(user *store.UserState) {
-		item, ok := s.catalog.Items[req.ShopItemId]
+		item, ok := catalog.Items[req.ShopItemId]
 		if !ok {
 			log.Printf("[ShopService] CreatePurchaseTransaction: unknown shopItemId=%d", req.ShopItemId)
 			return
@@ -134,8 +141,8 @@ func (s *ShopServiceServer) CreatePurchaseTransaction(ctx context.Context, req *
 			log.Printf("[ShopService] CreatePurchaseTransaction: deduct failed: %v", err)
 		}
 
-		for _, content := range s.catalog.Contents[req.ShopItemId] {
-			s.granter.GrantFull(user,
+		for _, content := range catalog.Contents[req.ShopItemId] {
+			granter.GrantFull(user,
 				model.PossessionType(content.PossessionType),
 				content.PossessionId,
 				content.Count,
@@ -143,13 +150,13 @@ func (s *ShopServiceServer) CreatePurchaseTransaction(ctx context.Context, req *
 			)
 		}
 
-		s.applyContentEffects(user, req.ShopItemId, 1, nowMillis)
+		applyShopContentEffects(catalog, user, req.ShopItemId, 1, nowMillis)
 
 		si := user.ShopItems[req.ShopItemId]
 		si.ShopItemId = req.ShopItemId
 		si.BoughtCount++
 		if item.ShopItemLimitedStockId > 0 {
-			if maxCount, ok := s.catalog.LimitedStock[item.ShopItemLimitedStockId]; ok && si.BoughtCount >= maxCount {
+			if maxCount, ok := catalog.LimitedStock[item.ShopItemLimitedStockId]; ok && si.BoughtCount >= maxCount {
 				si.BoughtCount = 0
 			}
 		}
@@ -182,12 +189,12 @@ func (s *ShopServiceServer) PurchaseGooglePlayStoreProduct(ctx context.Context, 
 	}, nil
 }
 
-func (s *ShopServiceServer) applyContentEffects(user *store.UserState, shopItemId, qty int32, nowMillis int64) {
-	for _, effect := range s.catalog.Effects[shopItemId] {
+func applyShopContentEffects(catalog *masterdata.ShopCatalog, user *store.UserState, shopItemId, qty int32, nowMillis int64) {
+	for _, effect := range catalog.Effects[shopItemId] {
 		switch effect.EffectTargetType {
 		case model.EffectTargetStaminaRecovery:
-			maxMillis := s.catalog.MaxStaminaMillis[user.Status.Level]
-			millis := s.resolveEffectMillis(effect.EffectValueType, effect.EffectValue, user.Status.Level)
+			maxMillis := catalog.MaxStaminaMillis[user.Status.Level]
+			millis := resolveShopEffectMillis(catalog, effect.EffectValueType, effect.EffectValue, user.Status.Level)
 			store.RecoverStamina(user, millis*qty, maxMillis, nowMillis)
 		default:
 			log.Printf("[ShopService] unhandled effect: shopItemId=%d targetType=%d", shopItemId, effect.EffectTargetType)
@@ -195,12 +202,12 @@ func (s *ShopServiceServer) applyContentEffects(user *store.UserState, shopItemI
 	}
 }
 
-func (s *ShopServiceServer) resolveEffectMillis(effectValueType, effectValue, userLevel int32) int32 {
+func resolveShopEffectMillis(catalog *masterdata.ShopCatalog, effectValueType, effectValue, userLevel int32) int32 {
 	switch effectValueType {
 	case model.EffectValueFixed:
 		return effectValue
 	case model.EffectValuePermil:
-		maxMillis := s.catalog.MaxStaminaMillis[userLevel]
+		maxMillis := catalog.MaxStaminaMillis[userLevel]
 		return effectValue * maxMillis / 1000
 	default:
 		return 0

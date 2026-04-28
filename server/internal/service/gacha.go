@@ -10,6 +10,7 @@ import (
 	"lunar-tear/server/internal/gacha"
 	"lunar-tear/server/internal/gametime"
 	"lunar-tear/server/internal/model"
+	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
@@ -20,34 +21,33 @@ type GachaServiceServer struct {
 	pb.UnimplementedGachaServiceServer
 	users    store.UserRepository
 	sessions store.SessionRepository
-	catalog  []store.GachaCatalogEntry
-	handler  *gacha.GachaHandler
+	holder   *runtime.Holder
 }
 
 func NewGachaServiceServer(
 	users store.UserRepository,
 	sessions store.SessionRepository,
-	catalog []store.GachaCatalogEntry,
-	handler *gacha.GachaHandler,
+	holder *runtime.Holder,
 ) *GachaServiceServer {
 	return &GachaServiceServer{
 		users:    users,
 		sessions: sessions,
-		catalog:  catalog,
-		handler:  handler,
+		holder:   holder,
 	}
 }
 
 func (s *GachaServiceServer) GetGachaList(ctx context.Context, req *pb.GetGachaListRequest) (*pb.GetGachaListResponse, error) {
 	log.Printf("[GachaService] GetGachaList: labels=%v", req.GachaLabelType)
 
-	catalog := s.catalog
+	cat := s.holder.Get()
+	catalog := cat.GachaEntries
+	handler := cat.GachaHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
 	user, err := s.users.UpdateUser(userId, func(user *store.UserState) {
 		user.EnsureMaps()
-		s.autoConvertExpiredMedals(user, catalog, nowMillis)
+		autoConvertExpiredMedals(user, catalog, handler, nowMillis)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("update user: %w", err)
@@ -55,6 +55,9 @@ func (s *GachaServiceServer) GetGachaList(ctx context.Context, req *pb.GetGachaL
 
 	gachaList := make([]*pb.Gacha, 0, len(catalog))
 	for _, entry := range catalog {
+		if !gachaActiveAt(entry, nowMillis) {
+			continue
+		}
 		if !matchesGachaLabel(req.GachaLabelType, entry.GachaLabelType) {
 			continue
 		}
@@ -71,7 +74,7 @@ func (s *GachaServiceServer) GetGachaList(ctx context.Context, req *pb.GetGachaL
 	}, nil
 }
 
-func (s *GachaServiceServer) autoConvertExpiredMedals(user *store.UserState, catalog []store.GachaCatalogEntry, nowMillis int64) {
+func autoConvertExpiredMedals(user *store.UserState, catalog []store.GachaCatalogEntry, handler *gacha.GachaHandler, nowMillis int64) {
 	for _, entry := range catalog {
 		if entry.GachaMedalId == 0 || entry.EndDatetime == 0 {
 			continue
@@ -84,7 +87,7 @@ func (s *GachaServiceServer) autoConvertExpiredMedals(user *store.UserState, cat
 			continue
 		}
 
-		medalInfo, ok := s.handler.MedalInfo[entry.GachaId]
+		medalInfo, ok := handler.MedalInfo[entry.GachaId]
 		if !ok {
 			continue
 		}
@@ -117,7 +120,8 @@ func (s *GachaServiceServer) autoConvertExpiredMedals(user *store.UserState, cat
 func (s *GachaServiceServer) GetGacha(ctx context.Context, req *pb.GetGachaRequest) (*pb.GetGachaResponse, error) {
 	log.Printf("[GachaService] GetGacha: ids=%v", req.GachaId)
 
-	catalog := s.catalog
+	catalog := s.holder.Get().GachaEntries
+	nowMillis := gametime.NowMillis()
 
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	user, err := s.users.LoadUser(userId)
@@ -128,11 +132,15 @@ func (s *GachaServiceServer) GetGacha(ctx context.Context, req *pb.GetGachaReque
 	byId := make(map[int32]*pb.Gacha, len(req.GachaId))
 	for _, wantedId := range req.GachaId {
 		for _, entry := range catalog {
-			if entry.GachaId == wantedId {
-				bs := user.Gacha.BannerStates[entry.GachaId]
-				byId[wantedId] = toProtoGacha(entry, &bs)
+			if entry.GachaId != wantedId {
+				continue
+			}
+			if !gachaActiveAt(entry, nowMillis) {
 				break
 			}
+			bs := user.Gacha.BannerStates[entry.GachaId]
+			byId[wantedId] = toProtoGacha(entry, &bs)
+			break
 		}
 	}
 
@@ -144,10 +152,12 @@ func (s *GachaServiceServer) GetGacha(ctx context.Context, req *pb.GetGachaReque
 func (s *GachaServiceServer) Draw(ctx context.Context, req *pb.DrawRequest) (*pb.DrawResponse, error) {
 	log.Printf("[GachaService] Draw: gachaId=%d phaseId=%d execCount=%d", req.GachaId, req.GachaPricePhaseId, req.ExecCount)
 
-	entry := findCatalogEntry(s.catalog, req.GachaId)
+	cat := s.holder.Get()
+	entry := findCatalogEntry(cat.GachaEntries, req.GachaId)
 	if entry == nil {
 		return nil, fmt.Errorf("gacha %d not found", req.GachaId)
 	}
+	handler := cat.GachaHandler
 
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	execCount := req.ExecCount
@@ -158,7 +168,7 @@ func (s *GachaServiceServer) Draw(ctx context.Context, req *pb.DrawRequest) (*pb
 	var drawResult *gacha.DrawResult
 	updatedUser, err := s.users.UpdateUser(userId, func(user *store.UserState) {
 		var drawErr error
-		drawResult, drawErr = s.handler.HandleDraw(user, *entry, req.GachaPricePhaseId, execCount)
+		drawResult, drawErr = handler.HandleDraw(user, *entry, req.GachaPricePhaseId, execCount)
 		if drawErr != nil {
 			log.Printf("[GachaService] Draw error: %v", drawErr)
 			drawResult = &gacha.DrawResult{}
@@ -285,14 +295,16 @@ func (s *GachaServiceServer) Draw(ctx context.Context, req *pb.DrawRequest) (*pb
 func (s *GachaServiceServer) ResetBoxGacha(ctx context.Context, req *pb.ResetBoxGachaRequest) (*pb.ResetBoxGachaResponse, error) {
 	log.Printf("[GachaService] ResetBoxGacha: gachaId=%d", req.GachaId)
 
-	entry := findCatalogEntry(s.catalog, req.GachaId)
+	cat := s.holder.Get()
+	entry := findCatalogEntry(cat.GachaEntries, req.GachaId)
 	if entry == nil {
 		return nil, fmt.Errorf("gacha %d not found", req.GachaId)
 	}
+	handler := cat.GachaHandler
 
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	updatedUser, err := s.users.UpdateUser(userId, func(user *store.UserState) {
-		if resetErr := s.handler.HandleResetBox(user, *entry); resetErr != nil {
+		if resetErr := handler.HandleResetBox(user, *entry); resetErr != nil {
 			log.Printf("[GachaService] ResetBoxGacha error: %v", resetErr)
 		}
 	})
@@ -315,7 +327,7 @@ func (s *GachaServiceServer) GetRewardGacha(ctx context.Context, req *emptypb.Em
 		return nil, fmt.Errorf("snapshot user: %w", err)
 	}
 
-	maxCount := s.handler.Config.RewardGachaDailyMaxCount
+	maxCount := s.holder.Get().GachaHandler.Config.RewardGachaDailyMaxCount
 	if maxCount <= 0 {
 		maxCount = model.DefaultDailyDrawLimit
 	}
@@ -337,11 +349,12 @@ func (s *GachaServiceServer) RewardDraw(ctx context.Context, req *pb.RewardDrawR
 	log.Printf("[GachaService] RewardDraw: placement=%q reward=%q amount=%q", req.PlacementName, req.RewardName, req.RewardAmount)
 
 	userId := CurrentUserId(ctx, s.users, s.sessions)
+	handler := s.holder.Get().GachaHandler
 
 	var items []gacha.DrawnItem
 	updatedUser, err := s.users.UpdateUser(userId, func(user *store.UserState) {
 		var drawErr error
-		items, drawErr = s.handler.HandleRewardDraw(user, 1)
+		items, drawErr = handler.HandleRewardDraw(user, 1)
 		if drawErr != nil {
 			log.Printf("[GachaService] RewardDraw error: %v", drawErr)
 		}
@@ -393,6 +406,16 @@ func matchesGachaLabel(labels []int32, label int32) bool {
 		}
 	}
 	return false
+}
+
+func gachaActiveAt(entry store.GachaCatalogEntry, nowMillis int64) bool {
+	if entry.StartDatetime != 0 && nowMillis < entry.StartDatetime {
+		return false
+	}
+	if entry.EndDatetime != 0 && nowMillis >= entry.EndDatetime {
+		return false
+	}
+	return true
 }
 
 func toProtoGacha(entry store.GachaCatalogEntry, bs *store.GachaBannerState) *pb.Gacha {

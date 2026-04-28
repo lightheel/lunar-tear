@@ -9,7 +9,7 @@ import (
 
 	pb "lunar-tear/server/gen/proto"
 	"lunar-tear/server/internal/gametime"
-	"lunar-tear/server/internal/masterdata"
+	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
@@ -19,22 +19,23 @@ type LoginBonusServiceServer struct {
 	pb.UnimplementedLoginBonusServiceServer
 	users    store.UserRepository
 	sessions store.SessionRepository
-	catalog  *masterdata.LoginBonusCatalog
+	holder   *runtime.Holder
 }
 
-func NewLoginBonusServiceServer(users store.UserRepository, sessions store.SessionRepository, catalog *masterdata.LoginBonusCatalog) *LoginBonusServiceServer {
-	return &LoginBonusServiceServer{users: users, sessions: sessions, catalog: catalog}
+func NewLoginBonusServiceServer(users store.UserRepository, sessions store.SessionRepository, holder *runtime.Holder) *LoginBonusServiceServer {
+	return &LoginBonusServiceServer{users: users, sessions: sessions, holder: holder}
 }
 
 func (s *LoginBonusServiceServer) ReceiveStamp(ctx context.Context, req *emptypb.Empty) (*pb.ReceiveStampResponse, error) {
 	log.Printf("[LoginBonusService] ReceiveStamp")
 	userId := CurrentUserId(ctx, s.users, s.sessions)
+	catalog := s.holder.Get().LoginBonus
 
 	s.users.UpdateUser(userId, func(user *store.UserState) {
 		now := gametime.NowMillis()
 		nextStamp := user.LoginBonus.CurrentStampNumber + 1
 
-		reward, ok := s.catalog.LookupStampReward(
+		reward, ok := catalog.LookupStampReward(
 			user.LoginBonus.LoginBonusId,
 			user.LoginBonus.CurrentPageNumber,
 			nextStamp,

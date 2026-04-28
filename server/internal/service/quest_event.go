@@ -15,13 +15,14 @@ import (
 func (s *QuestServiceServer) StartEventQuest(ctx context.Context, req *pb.StartEventQuestRequest) (*pb.StartEventQuestResponse, error) {
 	log.Printf("[QuestService] StartEventQuest: chapterId=%d questId=%d isBattleOnly=%v", req.EventQuestChapterId, req.QuestId, req.IsBattleOnly)
 
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 	s.users.UpdateUser(userId, func(user *store.UserState) {
-		s.engine.HandleEventQuestStart(user, req.EventQuestChapterId, req.QuestId, req.IsBattleOnly, req.UserDeckNumber, nowMillis)
+		engine.HandleEventQuestStart(user, req.EventQuestChapterId, req.QuestId, req.IsBattleOnly, req.UserDeckNumber, nowMillis)
 	})
 
-	drops := s.engine.BattleDropRewards(req.QuestId)
+	drops := engine.BattleDropRewards(req.QuestId)
 	pbDrops := make([]*pb.BattleDropReward, len(drops))
 	for i, d := range drops {
 		pbDrops[i] = &pb.BattleDropReward{
@@ -40,10 +41,11 @@ func (s *QuestServiceServer) FinishEventQuest(ctx context.Context, req *pb.Finis
 	log.Printf("[QuestService] FinishEventQuest: chapterId=%d questId=%d isRetired=%v isAnnihilated=%v", req.EventQuestChapterId, req.QuestId, req.IsRetired, req.IsAnnihilated)
 
 	nowMillis := gametime.NowMillis()
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	var outcome questflow.FinishOutcome
 	s.users.UpdateUser(userId, func(user *store.UserState) {
-		outcome = s.engine.HandleEventQuestFinish(user, req.EventQuestChapterId, req.QuestId, req.IsRetired, req.IsAnnihilated, nowMillis)
+		outcome = engine.HandleEventQuestFinish(user, req.EventQuestChapterId, req.QuestId, req.IsRetired, req.IsAnnihilated, nowMillis)
 	})
 
 	return &pb.FinishEventQuestResponse{
@@ -61,9 +63,10 @@ func (s *QuestServiceServer) FinishEventQuest(ctx context.Context, req *pb.Finis
 func (s *QuestServiceServer) RestartEventQuest(ctx context.Context, req *pb.RestartEventQuestRequest) (*pb.RestartEventQuestResponse, error) {
 	log.Printf("[QuestService] RestartEventQuest: chapterId=%d questId=%d", req.EventQuestChapterId, req.QuestId)
 
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	s.users.UpdateUser(userId, func(user *store.UserState) {
-		s.engine.HandleEventQuestRestart(user, req.EventQuestChapterId, req.QuestId, gametime.NowMillis())
+		engine.HandleEventQuestRestart(user, req.EventQuestChapterId, req.QuestId, gametime.NowMillis())
 	})
 
 	return &pb.RestartEventQuestResponse{
@@ -74,9 +77,10 @@ func (s *QuestServiceServer) RestartEventQuest(ctx context.Context, req *pb.Rest
 func (s *QuestServiceServer) UpdateEventQuestSceneProgress(ctx context.Context, req *pb.UpdateEventQuestSceneProgressRequest) (*pb.UpdateEventQuestSceneProgressResponse, error) {
 	log.Printf("[QuestService] UpdateEventQuestSceneProgress: questSceneId=%d", req.QuestSceneId)
 
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	s.users.UpdateUser(userId, func(user *store.UserState) {
-		s.engine.HandleEventQuestSceneProgress(user, req.QuestSceneId, gametime.NowMillis())
+		engine.HandleEventQuestSceneProgress(user, req.QuestSceneId, gametime.NowMillis())
 	})
 
 	return &pb.UpdateEventQuestSceneProgressResponse{}, nil

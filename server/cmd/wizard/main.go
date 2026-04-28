@@ -32,13 +32,14 @@ const (
 )
 
 type config struct {
-	IP       string `json:"ip"`
-	Device   string `json:"device"`
-	Detail   string `json:"detail"`
-	Summary  string `json:"summary"`
-	GRPCPort int    `json:"grpc_port,omitempty"`
-	CDNPort  int    `json:"cdn_port,omitempty"`
-	AuthPort int    `json:"auth_port,omitempty"`
+	IP        string `json:"ip"`
+	Device    string `json:"device"`
+	Detail    string `json:"detail"`
+	Summary   string `json:"summary"`
+	GRPCPort  int    `json:"grpc_port,omitempty"`
+	CDNPort   int    `json:"cdn_port,omitempty"`
+	AuthPort  int    `json:"auth_port,omitempty"`
+	AdminPort int    `json:"admin_port,omitempty"`
 }
 
 const (
@@ -47,10 +48,13 @@ const (
 	defaultAuthPort = 3000
 )
 
+// ports.Admin is opt-in: 0 means the admin webhook is not configured by the
+// wizard at all. Other ports always get a default if unset.
 type ports struct {
-	GRPC int
-	CDN  int
-	Auth int
+	GRPC  int
+	CDN   int
+	Auth  int
+	Admin int
 }
 
 func main() {
@@ -59,6 +63,7 @@ func main() {
 	grpcPort := flag.Int("grpc-port", defaultGRPCPort, "gRPC server port")
 	cdnPort := flag.Int("cdn-port", defaultCDNPort, "CDN server port")
 	authPort := flag.Int("auth-port", defaultAuthPort, "auth server port")
+	adminPort := flag.Int("admin-port", 0, "admin webhook port (0 = disabled). Bound on 127.0.0.1; only takes effect when LUNAR_ADMIN_TOKEN is set.")
 	flag.Parse()
 
 	flagSet := map[string]bool{}
@@ -80,10 +85,10 @@ func main() {
 
 	ip, cfg, firstRun := resolveIP(*preferSaved)
 
-	p := resolvePorts(flagSet, *grpcPort, *cdnPort, *authPort, cfg)
+	p := resolvePorts(flagSet, *grpcPort, *cdnPort, *authPort, *adminPort, cfg)
 	savedPorts := portsFromConfig(cfg)
 
-	if !firstRun && (p.GRPC != savedPorts.GRPC || p.CDN != savedPorts.CDN || p.Auth != savedPorts.Auth) {
+	if !firstRun && (p.GRPC != savedPorts.GRPC || p.CDN != savedPorts.CDN || p.Auth != savedPorts.Auth || p.Admin != savedPorts.Admin) {
 		if !warnPortChange(savedPorts, p) {
 			os.Exit(0)
 		}
@@ -92,6 +97,7 @@ func main() {
 	cfg.GRPCPort = p.GRPC
 	cfg.CDNPort = p.CDN
 	cfg.AuthPort = p.Auth
+	cfg.AdminPort = p.Admin
 	saveConfig(cfg)
 
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Width(14)
@@ -101,6 +107,9 @@ func main() {
 	fmt.Printf("  %s %s\n", labelStyle.Render("Game server:"), addrStyle.Render(fmt.Sprintf("%s:%d", ip, p.GRPC)))
 	fmt.Printf("  %s %s\n", labelStyle.Render("CDN:"), addrStyle.Render(fmt.Sprintf("%s:%d", ip, p.CDN)))
 	fmt.Printf("  %s %s\n", labelStyle.Render("Auth:"), addrStyle.Render(fmt.Sprintf("%s:%d", ip, p.Auth)))
+	if p.Admin > 0 {
+		fmt.Printf("  %s %s\n", labelStyle.Render("Admin webhook:"), addrStyle.Render(fmt.Sprintf("127.0.0.1:%d", p.Admin)))
+	}
 	fmt.Println()
 
 	if firstRun || *setupOnly {
@@ -477,6 +486,22 @@ func warnPortChange(old, new ports) bool {
 		}
 		return hlStyle.Render(fmt.Sprintf("    %-7s %d → %d", label+":", oldP, newP))
 	}
+	// Admin formatting handles the disabled (0) state since the port is
+	// opt-in and we don't want to display "0" to the user.
+	adminLine := func(oldP, newP int) (string, bool) {
+		switch {
+		case oldP == 0 && newP == 0:
+			return "", false
+		case oldP == 0 && newP != 0:
+			return hlStyle.Render(fmt.Sprintf("    %-7s disabled → %d", "Admin:", newP)), true
+		case oldP != 0 && newP == 0:
+			return hlStyle.Render(fmt.Sprintf("    %-7s %d → disabled", "Admin:", oldP)), true
+		case oldP == newP:
+			return dimStyle.Render(fmt.Sprintf("    %-7s %d (unchanged)", "Admin:", oldP)), true
+		default:
+			return hlStyle.Render(fmt.Sprintf("    %-7s %d → %d", "Admin:", oldP, newP)), true
+		}
+	}
 
 	var b strings.Builder
 	b.WriteString("\n")
@@ -487,7 +512,12 @@ func warnPortChange(old, new ports) bool {
 	b.WriteString(portLine("CDN", old.CDN, new.CDN))
 	b.WriteString("\n")
 	b.WriteString(portLine("Auth", old.Auth, new.Auth))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+	if line, show := adminLine(old.Admin, new.Admin); show {
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 	b.WriteString(dimStyle.Render("  Your APK was patched for the old ports. You may need to re-patch."))
 	b.WriteString("\n\n")
 	fmt.Print(b.String())
@@ -821,7 +851,7 @@ func loadConfig() (config, error) {
 }
 
 func portsFromConfig(cfg config) ports {
-	p := ports{GRPC: cfg.GRPCPort, CDN: cfg.CDNPort, Auth: cfg.AuthPort}
+	p := ports{GRPC: cfg.GRPCPort, CDN: cfg.CDNPort, Auth: cfg.AuthPort, Admin: cfg.AdminPort}
 	if p.GRPC == 0 {
 		p.GRPC = defaultGRPCPort
 	}
@@ -831,10 +861,11 @@ func portsFromConfig(cfg config) ports {
 	if p.Auth == 0 {
 		p.Auth = defaultAuthPort
 	}
+	// Admin is opt-in: leave 0 = disabled.
 	return p
 }
 
-func resolvePorts(flagSet map[string]bool, grpcFlag, cdnFlag, authFlag int, saved config) ports {
+func resolvePorts(flagSet map[string]bool, grpcFlag, cdnFlag, authFlag, adminFlag int, saved config) ports {
 	resolve := func(name string, flagVal, savedVal, defaultVal int) int {
 		if flagSet[name] {
 			return flagVal
@@ -848,6 +879,9 @@ func resolvePorts(flagSet map[string]bool, grpcFlag, cdnFlag, authFlag int, save
 		GRPC: resolve("grpc-port", grpcFlag, saved.GRPCPort, defaultGRPCPort),
 		CDN:  resolve("cdn-port", cdnFlag, saved.CDNPort, defaultCDNPort),
 		Auth: resolve("auth-port", authFlag, saved.AuthPort, defaultAuthPort),
+		// defaultVal=0 keeps admin opt-in: never enabled unless --admin-port
+		// is passed or a non-zero value was previously saved.
+		Admin: resolve("admin-port", adminFlag, saved.AdminPort, 0),
 	}
 }
 
@@ -874,13 +908,20 @@ func launchDev(ip string, p ports) {
 		runQuiet(exec.Command("go", "build", "-o", devBin, "./cmd/dev"), "build dev")
 	}).Run()
 
-	cmd := exec.Command(devBin,
+	devArgs := []string{
 		"--grpc.listen", fmt.Sprintf("0.0.0.0:%d", p.GRPC),
 		"--grpc.public-addr", fmt.Sprintf("%s:%d", ip, p.GRPC),
 		"--cdn.listen", fmt.Sprintf("0.0.0.0:%d", p.CDN),
 		"--cdn.public-addr", fmt.Sprintf("%s:%d", ip, p.CDN),
 		"--auth.listen", fmt.Sprintf("0.0.0.0:%d", p.Auth),
-	)
+	}
+	// Bind admin on loopback only — the wizard is for local dev, and the
+	// webhook should never be exposed to the LAN by accident. Operators who
+	// want a different bind can run cmd/dev directly with --admin.listen.
+	if p.Admin > 0 {
+		devArgs = append(devArgs, "--admin.listen", fmt.Sprintf("127.0.0.1:%d", p.Admin))
+	}
+	cmd := exec.Command(devBin, devArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin

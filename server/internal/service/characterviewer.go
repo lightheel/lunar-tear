@@ -6,7 +6,7 @@ import (
 	"log"
 
 	pb "lunar-tear/server/gen/proto"
-	"lunar-tear/server/internal/masterdata"
+	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -16,11 +16,11 @@ type CharacterViewerServiceServer struct {
 	pb.UnimplementedCharacterViewerServiceServer
 	users    store.UserRepository
 	sessions store.SessionRepository
-	catalog  *masterdata.CharacterViewerCatalog
+	holder   *runtime.Holder
 }
 
-func NewCharacterViewerServiceServer(users store.UserRepository, sessions store.SessionRepository, catalog *masterdata.CharacterViewerCatalog) *CharacterViewerServiceServer {
-	return &CharacterViewerServiceServer{users: users, sessions: sessions, catalog: catalog}
+func NewCharacterViewerServiceServer(users store.UserRepository, sessions store.SessionRepository, holder *runtime.Holder) *CharacterViewerServiceServer {
+	return &CharacterViewerServiceServer{users: users, sessions: sessions, holder: holder}
 }
 
 func (s *CharacterViewerServiceServer) CharacterViewerTop(ctx context.Context, _ *emptypb.Empty) (*pb.CharacterViewerTopResponse, error) {
@@ -32,7 +32,7 @@ func (s *CharacterViewerServiceServer) CharacterViewerTop(ctx context.Context, _
 		panic(fmt.Sprintf("CharacterViewerTop: no user for userId=%d: %v", userId, err))
 	}
 
-	released := s.catalog.ReleasedFieldIds(user)
+	released := s.holder.Get().CharacterViewer.ReleasedFieldIds(user)
 	log.Printf("[CharacterViewerService] released %d fields for user %d", len(released), userId)
 
 	return &pb.CharacterViewerTopResponse{

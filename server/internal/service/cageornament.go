@@ -6,8 +6,8 @@ import (
 
 	pb "lunar-tear/server/gen/proto"
 	"lunar-tear/server/internal/gametime"
-	"lunar-tear/server/internal/masterdata"
 	"lunar-tear/server/internal/model"
+	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 )
 
@@ -15,21 +15,22 @@ type CageOrnamentServiceServer struct {
 	pb.UnimplementedCageOrnamentServiceServer
 	users    store.UserRepository
 	sessions store.SessionRepository
-	catalog  *masterdata.CageOrnamentCatalog
-	granter  *store.PossessionGranter
+	holder   *runtime.Holder
 }
 
-func NewCageOrnamentServiceServer(users store.UserRepository, sessions store.SessionRepository, catalog *masterdata.CageOrnamentCatalog, granter *store.PossessionGranter) *CageOrnamentServiceServer {
-	return &CageOrnamentServiceServer{users: users, sessions: sessions, catalog: catalog, granter: granter}
+func NewCageOrnamentServiceServer(users store.UserRepository, sessions store.SessionRepository, holder *runtime.Holder) *CageOrnamentServiceServer {
+	return &CageOrnamentServiceServer{users: users, sessions: sessions, holder: holder}
 }
 
 func (s *CageOrnamentServiceServer) ReceiveReward(ctx context.Context, req *pb.ReceiveRewardRequest) (*pb.ReceiveRewardResponse, error) {
 	log.Printf("[CageOrnamentService] ReceiveReward: cageOrnamentId=%d", req.CageOrnamentId)
 
-	reward, ok := s.catalog.LookupReward(req.CageOrnamentId)
+	cat := s.holder.Get()
+	reward, ok := cat.CageOrnament.LookupReward(req.CageOrnamentId)
 	if !ok {
 		log.Fatalf("[CageOrnamentService] ReceiveReward: no reward for cageOrnamentId=%d", req.CageOrnamentId)
 	}
+	granter := cat.QuestHandler.Granter
 
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
@@ -39,7 +40,7 @@ func (s *CageOrnamentServiceServer) ReceiveReward(ctx context.Context, req *pb.R
 			AcquisitionDatetime: nowMillis,
 			LatestVersion:       nowMillis,
 		}
-		s.granter.GrantFull(user, model.PossessionType(reward.PossessionType), reward.PossessionId, reward.Count, nowMillis)
+		granter.GrantFull(user, model.PossessionType(reward.PossessionType), reward.PossessionId, reward.Count, nowMillis)
 	})
 
 	return &pb.ReceiveRewardResponse{

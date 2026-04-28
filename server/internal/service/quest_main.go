@@ -8,6 +8,7 @@ import (
 	"lunar-tear/server/internal/gametime"
 	"lunar-tear/server/internal/model"
 	"lunar-tear/server/internal/questflow"
+	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
@@ -17,22 +18,23 @@ type QuestServiceServer struct {
 	pb.UnimplementedQuestServiceServer
 	users    store.UserRepository
 	sessions store.SessionRepository
-	engine   *questflow.QuestHandler
+	holder   *runtime.Holder
 }
 
-func NewQuestServiceServer(users store.UserRepository, sessions store.SessionRepository, engine *questflow.QuestHandler) *QuestServiceServer {
-	if engine == nil {
-		panic("quest handler is required")
+func NewQuestServiceServer(users store.UserRepository, sessions store.SessionRepository, holder *runtime.Holder) *QuestServiceServer {
+	if holder == nil {
+		panic("runtime holder is required")
 	}
-	return &QuestServiceServer{users: users, sessions: sessions, engine: engine}
+	return &QuestServiceServer{users: users, sessions: sessions, holder: holder}
 }
 
 func (s *QuestServiceServer) UpdateMainFlowSceneProgress(ctx context.Context, req *pb.UpdateMainFlowSceneProgressRequest) (*pb.UpdateMainFlowSceneProgressResponse, error) {
 	log.Printf("[QuestService] UpdateMainFlowSceneProgress: questSceneId=%d", req.QuestSceneId)
 
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	s.users.UpdateUser(userId, func(user *store.UserState) {
-		s.engine.HandleMainFlowSceneProgress(user, req.QuestSceneId, gametime.NowMillis())
+		engine.HandleMainFlowSceneProgress(user, req.QuestSceneId, gametime.NowMillis())
 	})
 
 	return &pb.UpdateMainFlowSceneProgressResponse{}, nil
@@ -41,9 +43,10 @@ func (s *QuestServiceServer) UpdateMainFlowSceneProgress(ctx context.Context, re
 func (s *QuestServiceServer) UpdateReplayFlowSceneProgress(ctx context.Context, req *pb.UpdateReplayFlowSceneProgressRequest) (*pb.UpdateReplayFlowSceneProgressResponse, error) {
 	log.Printf("[QuestService] UpdateReplayFlowSceneProgress: questSceneId=%d", req.QuestSceneId)
 
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	s.users.UpdateUser(userId, func(user *store.UserState) {
-		s.engine.HandleReplayFlowSceneProgress(user, req.QuestSceneId, gametime.NowMillis())
+		engine.HandleReplayFlowSceneProgress(user, req.QuestSceneId, gametime.NowMillis())
 	})
 
 	return &pb.UpdateReplayFlowSceneProgressResponse{}, nil
@@ -52,9 +55,10 @@ func (s *QuestServiceServer) UpdateReplayFlowSceneProgress(ctx context.Context, 
 func (s *QuestServiceServer) UpdateMainQuestSceneProgress(ctx context.Context, req *pb.UpdateMainQuestSceneProgressRequest) (*pb.UpdateMainQuestSceneProgressResponse, error) {
 	log.Printf("[QuestService] UpdateMainQuestSceneProgress: questSceneId=%d", req.QuestSceneId)
 
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	s.users.UpdateUser(userId, func(user *store.UserState) {
-		s.engine.HandleMainQuestSceneProgress(user, req.QuestSceneId)
+		engine.HandleMainQuestSceneProgress(user, req.QuestSceneId)
 	})
 
 	return &pb.UpdateMainQuestSceneProgressResponse{}, nil
@@ -63,17 +67,18 @@ func (s *QuestServiceServer) UpdateMainQuestSceneProgress(ctx context.Context, r
 func (s *QuestServiceServer) StartMainQuest(ctx context.Context, req *pb.StartMainQuestRequest) (*pb.StartMainQuestResponse, error) {
 	log.Printf("[QuestService] StartMainQuest: %+v", req)
 
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 	s.users.UpdateUser(userId, func(user *store.UserState) {
 		if req.IsReplayFlow {
-			s.engine.HandleQuestStartReplay(user, req.QuestId, req.IsBattleOnly, req.UserDeckNumber, nowMillis)
+			engine.HandleQuestStartReplay(user, req.QuestId, req.IsBattleOnly, req.UserDeckNumber, nowMillis)
 		} else {
-			s.engine.HandleQuestStart(user, req.QuestId, req.IsBattleOnly, req.UserDeckNumber, nowMillis)
+			engine.HandleQuestStart(user, req.QuestId, req.IsBattleOnly, req.UserDeckNumber, nowMillis)
 		}
 	})
 
-	drops := s.engine.BattleDropRewards(req.QuestId)
+	drops := engine.BattleDropRewards(req.QuestId)
 	pbDrops := make([]*pb.BattleDropReward, len(drops))
 	for i, d := range drops {
 		pbDrops[i] = &pb.BattleDropReward{
@@ -108,10 +113,11 @@ func (s *QuestServiceServer) FinishMainQuest(ctx context.Context, req *pb.Finish
 		req.QuestId, req.IsMainFlow, req.IsRetired, req.IsAnnihilated, req.StorySkipType)
 
 	nowMillis := gametime.NowMillis()
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	var outcome questflow.FinishOutcome
 	s.users.UpdateUser(userId, func(user *store.UserState) {
-		outcome = s.engine.HandleQuestFinish(user, req.QuestId, req.IsRetired, req.IsAnnihilated, nowMillis)
+		outcome = engine.HandleQuestFinish(user, req.QuestId, req.IsRetired, req.IsAnnihilated, nowMillis)
 	})
 
 	return &pb.FinishMainQuestResponse{
@@ -130,14 +136,15 @@ func (s *QuestServiceServer) FinishMainQuest(ctx context.Context, req *pb.Finish
 func (s *QuestServiceServer) RestartMainQuest(ctx context.Context, req *pb.RestartMainQuestRequest) (*pb.RestartMainQuestResponse, error) {
 	log.Printf("[QuestService] RestartMainQuest: questId=%d isMainFlow=%v", req.QuestId, req.IsMainFlow)
 
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	var deckNumber int32
 	s.users.UpdateUser(userId, func(user *store.UserState) {
-		s.engine.HandleQuestRestart(user, req.QuestId, gametime.NowMillis())
+		engine.HandleQuestRestart(user, req.QuestId, gametime.NowMillis())
 		deckNumber = user.Quests[req.QuestId].UserDeckNumber
 	})
 
-	drops := s.engine.BattleDropRewards(req.QuestId)
+	drops := engine.BattleDropRewards(req.QuestId)
 	pbDrops := make([]*pb.BattleDropReward, len(drops))
 	for i, d := range drops {
 		pbDrops[i] = &pb.BattleDropReward{
@@ -162,6 +169,7 @@ func (s *QuestServiceServer) SkipQuest(ctx context.Context, req *pb.SkipQuestReq
 	log.Printf("[QuestService] SkipQuest: questId=%d skipCount=%d useEffectItems=%d", req.QuestId, req.SkipCount, len(req.UseEffectItem))
 
 	nowMillis := gametime.NowMillis()
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	var outcome questflow.FinishOutcome
 	s.users.UpdateUser(userId, func(user *store.UserState) {
@@ -172,7 +180,7 @@ func (s *QuestServiceServer) SkipQuest(ctx context.Context, req *pb.SkipQuestReq
 				user.ConsumableItems[item.ConsumableItemId] = 0
 			}
 		}
-		outcome = s.engine.HandleQuestSkip(user, req.QuestId, req.SkipCount, nowMillis)
+		outcome = engine.HandleQuestSkip(user, req.QuestId, req.SkipCount, nowMillis)
 	})
 
 	return &pb.SkipQuestResponse{
@@ -184,10 +192,11 @@ func (s *QuestServiceServer) SkipQuest(ctx context.Context, req *pb.SkipQuestReq
 func (s *QuestServiceServer) SetRoute(ctx context.Context, req *pb.SetRouteRequest) (*pb.SetRouteResponse, error) {
 	log.Printf("[QuestService] SetRoute: mainQuestRouteId=%d", req.MainQuestRouteId)
 
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	s.users.UpdateUser(userId, func(user *store.UserState) {
 		user.MainQuest.CurrentMainQuestRouteId = req.MainQuestRouteId
-		if seasonId, ok := s.engine.SeasonIdByRouteId[req.MainQuestRouteId]; ok {
+		if seasonId, ok := engine.SeasonIdByRouteId[req.MainQuestRouteId]; ok {
 			user.MainQuest.MainQuestSeasonId = seasonId
 		}
 		now := gametime.NowMillis()

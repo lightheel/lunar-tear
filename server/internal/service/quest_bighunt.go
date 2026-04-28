@@ -8,7 +8,7 @@ import (
 	"lunar-tear/server/internal/gametime"
 	"lunar-tear/server/internal/masterdata"
 	"lunar-tear/server/internal/model"
-	"lunar-tear/server/internal/questflow"
+	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
@@ -18,34 +18,35 @@ type BigHuntServiceServer struct {
 	pb.UnimplementedBigHuntServiceServer
 	users    store.UserRepository
 	sessions store.SessionRepository
-	catalog  *masterdata.BigHuntCatalog
-	engine   *questflow.QuestHandler
+	holder   *runtime.Holder
 }
 
 func NewBigHuntServiceServer(
 	users store.UserRepository,
 	sessions store.SessionRepository,
-	catalog *masterdata.BigHuntCatalog,
-	engine *questflow.QuestHandler,
+	holder *runtime.Holder,
 ) *BigHuntServiceServer {
-	return &BigHuntServiceServer{users: users, sessions: sessions, catalog: catalog, engine: engine}
+	return &BigHuntServiceServer{users: users, sessions: sessions, holder: holder}
 }
 
 func (s *BigHuntServiceServer) StartBigHuntQuest(ctx context.Context, req *pb.StartBigHuntQuestRequest) (*pb.StartBigHuntQuestResponse, error) {
 	log.Printf("[BigHuntService] StartBigHuntQuest: bossQuestId=%d questId=%d deckNumber=%d isDryRun=%v",
 		req.BigHuntBossQuestId, req.BigHuntQuestId, req.UserDeckNumber, req.IsDryRun)
 
+	cat := s.holder.Get()
+	catalog := cat.BigHunt
+	engine := cat.QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
-	bhQuest, ok := s.catalog.QuestById[req.BigHuntQuestId]
+	bhQuest, ok := catalog.QuestById[req.BigHuntQuestId]
 	if !ok {
 		log.Printf("[BigHuntService] StartBigHuntQuest: unknown bigHuntQuestId=%d", req.BigHuntQuestId)
 	}
 
 	s.users.UpdateUser(userId, func(user *store.UserState) {
 		if ok {
-			s.engine.HandleBigHuntQuestStart(user, bhQuest.QuestId, req.UserDeckNumber, nowMillis)
+			engine.HandleBigHuntQuestStart(user, bhQuest.QuestId, req.UserDeckNumber, nowMillis)
 		}
 
 		user.BigHuntProgress = store.BigHuntProgress{
@@ -85,18 +86,21 @@ func (s *BigHuntServiceServer) FinishBigHuntQuest(ctx context.Context, req *pb.F
 	log.Printf("[BigHuntService] FinishBigHuntQuest: bossQuestId=%d questId=%d isRetired=%v",
 		req.BigHuntBossQuestId, req.BigHuntQuestId, req.IsRetired)
 
+	cat := s.holder.Get()
+	catalog := cat.BigHunt
+	engine := cat.QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
-	bhQuest := s.catalog.QuestById[req.BigHuntQuestId]
-	bossQuest := s.catalog.BossQuestById[req.BigHuntBossQuestId]
-	boss := s.catalog.BossByBossId[bossQuest.BigHuntBossId]
+	bhQuest := catalog.QuestById[req.BigHuntQuestId]
+	bossQuest := catalog.BossQuestById[req.BigHuntBossQuestId]
+	boss := catalog.BossByBossId[bossQuest.BigHuntBossId]
 
 	var scoreInfo *pb.BigHuntScoreInfo
 	var scoreRewards []*pb.BigHuntReward
 
 	s.users.UpdateUser(userId, func(user *store.UserState) {
-		s.engine.HandleBigHuntQuestFinish(user, bhQuest.QuestId, req.IsRetired, false, nowMillis)
+		engine.HandleBigHuntQuestFinish(user, bhQuest.QuestId, req.IsRetired, false, nowMillis)
 
 		if req.IsRetired || user.BigHuntProgress.IsDryRun {
 			user.BigHuntProgress = store.BigHuntProgress{LatestVersion: nowMillis}
@@ -108,7 +112,7 @@ func (s *BigHuntServiceServer) FinishBigHuntQuest(ctx context.Context, req *pb.F
 		baseScore := totalDamage
 
 		difficultyBonusPermil := int32(0)
-		if coeff, ok := s.catalog.ScoreCoefficients[bhQuest.BigHuntQuestScoreCoefficientId]; ok {
+		if coeff, ok := catalog.ScoreCoefficients[bhQuest.BigHuntQuestScoreCoefficientId]; ok {
 			difficultyBonusPermil = coeff
 		}
 
@@ -138,7 +142,7 @@ func (s *BigHuntServiceServer) FinishBigHuntQuest(ctx context.Context, req *pb.F
 		}
 
 		schedKey := store.BigHuntScheduleScoreKey{
-			BigHuntScheduleId: s.catalog.ActiveScheduleId,
+			BigHuntScheduleId: catalog.ActiveScheduleId,
 			BigHuntBossId:     bossQuest.BigHuntBossId,
 		}
 		oldSchedMax := user.BigHuntScheduleMaxScores[schedKey].MaxScore
@@ -163,7 +167,7 @@ func (s *BigHuntServiceServer) FinishBigHuntQuest(ctx context.Context, req *pb.F
 			}
 		}
 
-		assetGradeIconId := s.catalog.ResolveGradeIconId(bossQuest.BigHuntBossId, userScore)
+		assetGradeIconId := catalog.ResolveGradeIconId(bossQuest.BigHuntBossId, userScore)
 
 		scoreInfo = &pb.BigHuntScoreInfo{
 			UserScore:             userScore,
@@ -177,12 +181,12 @@ func (s *BigHuntServiceServer) FinishBigHuntQuest(ctx context.Context, req *pb.F
 		}
 
 		if isHighScore {
-			rewardGroupId := s.catalog.ResolveActiveScoreRewardGroupId(
+			rewardGroupId := catalog.ResolveActiveScoreRewardGroupId(
 				bossQuest.BigHuntScoreRewardGroupScheduleId, nowMillis)
 			if rewardGroupId > 0 {
-				newItems := s.catalog.CollectNewRewards(rewardGroupId, oldMax, userScore)
+				newItems := catalog.CollectNewRewards(rewardGroupId, oldMax, userScore)
 				for _, item := range newItems {
-					s.engine.Granter.GrantFull(user, model.PossessionType(item.PossessionType), item.PossessionId, item.Count, nowMillis)
+					engine.Granter.GrantFull(user, model.PossessionType(item.PossessionType), item.PossessionId, item.Count, nowMillis)
 					scoreRewards = append(scoreRewards, &pb.BigHuntReward{
 						PossessionType: item.PossessionType,
 						PossessionId:   item.PossessionId,
@@ -216,16 +220,19 @@ func (s *BigHuntServiceServer) FinishBigHuntQuest(ctx context.Context, req *pb.F
 func (s *BigHuntServiceServer) RestartBigHuntQuest(ctx context.Context, req *pb.RestartBigHuntQuestRequest) (*pb.RestartBigHuntQuestResponse, error) {
 	log.Printf("[BigHuntService] RestartBigHuntQuest: bossQuestId=%d questId=%d", req.BigHuntBossQuestId, req.BigHuntQuestId)
 
+	cat := s.holder.Get()
+	catalog := cat.BigHunt
+	engine := cat.QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
-	bhQuest := s.catalog.QuestById[req.BigHuntQuestId]
+	bhQuest := catalog.QuestById[req.BigHuntQuestId]
 
 	var battleBinary []byte
 	var deckNumber int32
 
 	s.users.UpdateUser(userId, func(user *store.UserState) {
-		s.engine.HandleBigHuntQuestStart(user, bhQuest.QuestId, user.BigHuntDeckNumber, nowMillis)
+		engine.HandleBigHuntQuestStart(user, bhQuest.QuestId, user.BigHuntDeckNumber, nowMillis)
 
 		user.BigHuntProgress.CurrentQuestSceneId = 0
 		user.BigHuntProgress.LatestVersion = nowMillis
@@ -302,6 +309,7 @@ func (s *BigHuntServiceServer) SaveBigHuntBattleInfo(ctx context.Context, req *p
 func (s *BigHuntServiceServer) GetBigHuntTopData(ctx context.Context, _ *emptypb.Empty) (*pb.GetBigHuntTopDataResponse, error) {
 	log.Printf("[BigHuntService] GetBigHuntTopData")
 
+	catalog := s.holder.Get().BigHunt
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	user, _ := s.users.LoadUser(userId)
 
@@ -309,13 +317,13 @@ func (s *BigHuntServiceServer) GetBigHuntTopData(ctx context.Context, _ *emptypb
 	weeklyVersion := gametime.WeeklyVersion(nowMillis)
 
 	var weeklyScoreResults []*pb.WeeklyScoreResult
-	for _, boss := range s.catalog.BossByBossId {
+	for _, boss := range catalog.BossByBossId {
 		key := store.BigHuntWeeklyScoreKey{
 			BigHuntWeeklyVersion: weeklyVersion,
 			AttributeType:        boss.AttributeType,
 		}
 		ws := user.BigHuntWeeklyMaxScores[key]
-		gradeIconId := s.catalog.ResolveGradeIconId(boss.BigHuntBossId, ws.MaxScore)
+		gradeIconId := catalog.ResolveGradeIconId(boss.BigHuntBossId, ws.MaxScore)
 
 		weeklyScoreResults = append(weeklyScoreResults, &pb.WeeklyScoreResult{
 			AttributeType:           boss.AttributeType,
@@ -330,10 +338,10 @@ func (s *BigHuntServiceServer) GetBigHuntTopData(ctx context.Context, _ *emptypb
 
 	ws := user.BigHuntWeeklyStatuses[weeklyVersion]
 
-	weeklyRewards := s.resolveWeeklyRewards(user, weeklyVersion, nowMillis)
+	weeklyRewards := resolveBigHuntWeeklyRewards(catalog, user, weeklyVersion, nowMillis)
 
 	lastWeekVersion := weeklyVersion - 7*24*60*60*1000
-	lastWeekRewards := s.resolveWeeklyRewards(user, lastWeekVersion, nowMillis)
+	lastWeekRewards := resolveBigHuntWeeklyRewards(catalog, user, lastWeekVersion, nowMillis)
 
 	return &pb.GetBigHuntTopDataResponse{
 		WeeklyScoreResult:           weeklyScoreResults,
@@ -343,14 +351,14 @@ func (s *BigHuntServiceServer) GetBigHuntTopData(ctx context.Context, _ *emptypb
 	}, nil
 }
 
-func (s *BigHuntServiceServer) resolveWeeklyRewards(user store.UserState, weeklyVersion, nowMillis int64) []*pb.BigHuntReward {
+func resolveBigHuntWeeklyRewards(catalog *masterdata.BigHuntCatalog, user store.UserState, weeklyVersion, nowMillis int64) []*pb.BigHuntReward {
 	var rewards []*pb.BigHuntReward
-	for _, boss := range s.catalog.BossByBossId {
+	for _, boss := range catalog.BossByBossId {
 		rewardKey := masterdata.BigHuntWeeklyRewardKey{
 			ScheduleId:    1,
 			AttributeType: boss.AttributeType,
 		}
-		rewardGroupId := s.catalog.ResolveActiveWeeklyRewardGroupId(rewardKey, nowMillis)
+		rewardGroupId := catalog.ResolveActiveWeeklyRewardGroupId(rewardKey, nowMillis)
 		if rewardGroupId == 0 {
 			continue
 		}
@@ -359,7 +367,7 @@ func (s *BigHuntServiceServer) resolveWeeklyRewards(user store.UserState, weekly
 			AttributeType:        boss.AttributeType,
 		}
 		maxScore := user.BigHuntWeeklyMaxScores[weekKey].MaxScore
-		for _, item := range s.catalog.CollectNewRewards(rewardGroupId, 0, maxScore) {
+		for _, item := range catalog.CollectNewRewards(rewardGroupId, 0, maxScore) {
 			rewards = append(rewards, &pb.BigHuntReward{
 				PossessionType: item.PossessionType,
 				PossessionId:   item.PossessionId,

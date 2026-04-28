@@ -13,13 +13,14 @@ import (
 func (s *QuestServiceServer) StartExtraQuest(ctx context.Context, req *pb.StartExtraQuestRequest) (*pb.StartExtraQuestResponse, error) {
 	log.Printf("[QuestService] StartExtraQuest: questId=%d deckNumber=%d", req.QuestId, req.UserDeckNumber)
 
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 	s.users.UpdateUser(userId, func(user *store.UserState) {
-		s.engine.HandleExtraQuestStart(user, req.QuestId, req.UserDeckNumber, nowMillis)
+		engine.HandleExtraQuestStart(user, req.QuestId, req.UserDeckNumber, nowMillis)
 	})
 
-	drops := s.engine.BattleDropRewards(req.QuestId)
+	drops := engine.BattleDropRewards(req.QuestId)
 	pbDrops := make([]*pb.BattleDropReward, len(drops))
 	for i, d := range drops {
 		pbDrops[i] = &pb.BattleDropReward{
@@ -38,10 +39,11 @@ func (s *QuestServiceServer) FinishExtraQuest(ctx context.Context, req *pb.Finis
 	log.Printf("[QuestService] FinishExtraQuest: questId=%d isRetired=%v isAnnihilated=%v", req.QuestId, req.IsRetired, req.IsAnnihilated)
 
 	nowMillis := gametime.NowMillis()
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	var outcome questflow.FinishOutcome
 	s.users.UpdateUser(userId, func(user *store.UserState) {
-		outcome = s.engine.HandleExtraQuestFinish(user, req.QuestId, req.IsRetired, req.IsAnnihilated, nowMillis)
+		outcome = engine.HandleExtraQuestFinish(user, req.QuestId, req.IsRetired, req.IsAnnihilated, nowMillis)
 	})
 
 	return &pb.FinishExtraQuestResponse{
@@ -58,14 +60,15 @@ func (s *QuestServiceServer) FinishExtraQuest(ctx context.Context, req *pb.Finis
 func (s *QuestServiceServer) RestartExtraQuest(ctx context.Context, req *pb.RestartExtraQuestRequest) (*pb.RestartExtraQuestResponse, error) {
 	log.Printf("[QuestService] RestartExtraQuest: questId=%d", req.QuestId)
 
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	var deckNumber int32
 	s.users.UpdateUser(userId, func(user *store.UserState) {
-		s.engine.HandleExtraQuestRestart(user, req.QuestId, gametime.NowMillis())
+		engine.HandleExtraQuestRestart(user, req.QuestId, gametime.NowMillis())
 		deckNumber = user.Quests[req.QuestId].UserDeckNumber
 	})
 
-	drops := s.engine.BattleDropRewards(req.QuestId)
+	drops := engine.BattleDropRewards(req.QuestId)
 	pbDrops := make([]*pb.BattleDropReward, len(drops))
 	for i, d := range drops {
 		pbDrops[i] = &pb.BattleDropReward{
@@ -84,9 +87,10 @@ func (s *QuestServiceServer) RestartExtraQuest(ctx context.Context, req *pb.Rest
 func (s *QuestServiceServer) UpdateExtraQuestSceneProgress(ctx context.Context, req *pb.UpdateExtraQuestSceneProgressRequest) (*pb.UpdateExtraQuestSceneProgressResponse, error) {
 	log.Printf("[QuestService] UpdateExtraQuestSceneProgress: questSceneId=%d", req.QuestSceneId)
 
+	engine := s.holder.Get().QuestHandler
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	s.users.UpdateUser(userId, func(user *store.UserState) {
-		s.engine.HandleExtraQuestSceneProgress(user, req.QuestSceneId, gametime.NowMillis())
+		engine.HandleExtraQuestSceneProgress(user, req.QuestSceneId, gametime.NowMillis())
 	})
 
 	return &pb.UpdateExtraQuestSceneProgressResponse{}, nil

@@ -8,6 +8,7 @@ import (
 	pb "lunar-tear/server/gen/proto"
 	"lunar-tear/server/internal/gametime"
 	"lunar-tear/server/internal/masterdata"
+	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 )
 
@@ -17,17 +18,19 @@ type CompanionServiceServer struct {
 	pb.UnimplementedCompanionServiceServer
 	users    store.UserRepository
 	sessions store.SessionRepository
-	catalog  *masterdata.CompanionCatalog
-	config   *masterdata.GameConfig
+	holder   *runtime.Holder
 }
 
-func NewCompanionServiceServer(users store.UserRepository, sessions store.SessionRepository, catalog *masterdata.CompanionCatalog, config *masterdata.GameConfig) *CompanionServiceServer {
-	return &CompanionServiceServer{users: users, sessions: sessions, catalog: catalog, config: config}
+func NewCompanionServiceServer(users store.UserRepository, sessions store.SessionRepository, holder *runtime.Holder) *CompanionServiceServer {
+	return &CompanionServiceServer{users: users, sessions: sessions, holder: holder}
 }
 
 func (s *CompanionServiceServer) Enhance(ctx context.Context, req *pb.CompanionEnhanceRequest) (*pb.CompanionEnhanceResponse, error) {
 	log.Printf("[CompanionService] Enhance: uuid=%s addLevel=%d", req.UserCompanionUuid, req.AddLevelCount)
 
+	cat := s.holder.Get()
+	catalog := cat.Companion
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -38,7 +41,7 @@ func (s *CompanionServiceServer) Enhance(ctx context.Context, req *pb.CompanionE
 			return
 		}
 
-		compDef, ok := s.catalog.CompanionById[companion.CompanionId]
+		compDef, ok := catalog.CompanionById[companion.CompanionId]
 		if !ok {
 			log.Printf("[CompanionService] Enhance: companion master id=%d not found", companion.CompanionId)
 			return
@@ -50,13 +53,13 @@ func (s *CompanionServiceServer) Enhance(ctx context.Context, req *pb.CompanionE
 		}
 
 		for lvl := companion.Level; lvl < targetLevel; lvl++ {
-			if costFunc, ok := s.catalog.GoldCostByCategory[compDef.CompanionCategoryType]; ok {
+			if costFunc, ok := catalog.GoldCostByCategory[compDef.CompanionCategoryType]; ok {
 				goldCost := costFunc.Evaluate(lvl)
-				user.ConsumableItems[s.config.ConsumableItemIdForGold] -= goldCost
+				user.ConsumableItems[config.ConsumableItemIdForGold] -= goldCost
 			}
 
 			matKey := masterdata.CompanionLevelKey{CategoryType: compDef.CompanionCategoryType, Level: lvl}
-			if mat, ok := s.catalog.MaterialsByKey[matKey]; ok {
+			if mat, ok := catalog.MaterialsByKey[matKey]; ok {
 				user.Materials[mat.MaterialId] -= mat.Count
 			}
 		}

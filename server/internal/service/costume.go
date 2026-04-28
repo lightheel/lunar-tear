@@ -13,6 +13,7 @@ import (
 	"lunar-tear/server/internal/gameutil"
 	"lunar-tear/server/internal/masterdata"
 	"lunar-tear/server/internal/model"
+	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 )
 
@@ -20,17 +21,19 @@ type CostumeServiceServer struct {
 	pb.UnimplementedCostumeServiceServer
 	users    store.UserRepository
 	sessions store.SessionRepository
-	catalog  *masterdata.CostumeCatalog
-	config   *masterdata.GameConfig
+	holder   *runtime.Holder
 }
 
-func NewCostumeServiceServer(users store.UserRepository, sessions store.SessionRepository, catalog *masterdata.CostumeCatalog, config *masterdata.GameConfig) *CostumeServiceServer {
-	return &CostumeServiceServer{users: users, sessions: sessions, catalog: catalog, config: config}
+func NewCostumeServiceServer(users store.UserRepository, sessions store.SessionRepository, holder *runtime.Holder) *CostumeServiceServer {
+	return &CostumeServiceServer{users: users, sessions: sessions, holder: holder}
 }
 
 func (s *CostumeServiceServer) Enhance(ctx context.Context, req *pb.EnhanceRequest) (*pb.EnhanceResponse, error) {
 	log.Printf("[CostumeService] Enhance: uuid=%s materials=%v", req.UserCostumeUuid, req.Materials)
 
+	cat := s.holder.Get()
+	catalog := cat.Costume
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -41,7 +44,7 @@ func (s *CostumeServiceServer) Enhance(ctx context.Context, req *pb.EnhanceReque
 			return
 		}
 
-		cm, ok := s.catalog.Costumes[costume.CostumeId]
+		cm, ok := catalog.Costumes[costume.CostumeId]
 		if !ok {
 			log.Printf("[CostumeService] Enhance: costume master id=%d not found", costume.CostumeId)
 			return
@@ -50,7 +53,7 @@ func (s *CostumeServiceServer) Enhance(ctx context.Context, req *pb.EnhanceReque
 		totalExp := int32(0)
 		totalMaterialCount := int32(0)
 		for materialId, count := range req.Materials {
-			mat, ok := s.catalog.Materials[materialId]
+			mat, ok := catalog.Materials[materialId]
 			if !ok {
 				log.Printf("[CostumeService] Enhance: material id=%d not found, skipping", materialId)
 				continue
@@ -66,20 +69,20 @@ func (s *CostumeServiceServer) Enhance(ctx context.Context, req *pb.EnhanceReque
 
 			expPerUnit := mat.EffectValue
 			if mat.WeaponType != 0 && mat.WeaponType == cm.SkillfulWeaponType {
-				expPerUnit = expPerUnit * s.config.MaterialSameWeaponExpCoefficientPermil / 1000
+				expPerUnit = expPerUnit * config.MaterialSameWeaponExpCoefficientPermil / 1000
 			}
 			totalExp += expPerUnit * count
 		}
 
-		if costFunc, ok := s.catalog.EnhanceCostByRarity[cm.RarityType]; ok && totalMaterialCount > 0 {
+		if costFunc, ok := catalog.EnhanceCostByRarity[cm.RarityType]; ok && totalMaterialCount > 0 {
 			goldCost := costFunc.Evaluate(totalMaterialCount)
-			user.ConsumableItems[s.config.ConsumableItemIdForGold] -= goldCost
+			user.ConsumableItems[config.ConsumableItemIdForGold] -= goldCost
 			log.Printf("[CostumeService] Enhance: gold cost=%d (materials=%d)", goldCost, totalMaterialCount)
 		}
 
 		costume.Exp += totalExp
 
-		if thresholds, ok := s.catalog.ExpByRarity[cm.RarityType]; ok {
+		if thresholds, ok := catalog.ExpByRarity[cm.RarityType]; ok {
 			costume.Level, costume.Exp = gameutil.LevelAndCap(costume.Exp, thresholds)
 		}
 
@@ -100,6 +103,9 @@ func (s *CostumeServiceServer) Enhance(ctx context.Context, req *pb.EnhanceReque
 func (s *CostumeServiceServer) Awaken(ctx context.Context, req *pb.AwakenRequest) (*pb.AwakenResponse, error) {
 	log.Printf("[CostumeService] Awaken: uuid=%s materials=%v", req.UserCostumeUuid, req.Materials)
 
+	cat := s.holder.Get()
+	catalog := cat.Costume
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -110,7 +116,7 @@ func (s *CostumeServiceServer) Awaken(ctx context.Context, req *pb.AwakenRequest
 			return
 		}
 
-		awakenRow, ok := s.catalog.AwakenByCostumeId[costume.CostumeId]
+		awakenRow, ok := catalog.AwakenByCostumeId[costume.CostumeId]
 		if !ok {
 			log.Printf("[CostumeService] Awaken: no awaken data for costumeId=%d", costume.CostumeId)
 			return
@@ -118,8 +124,8 @@ func (s *CostumeServiceServer) Awaken(ctx context.Context, req *pb.AwakenRequest
 
 		nextStep := costume.AwakenCount + 1
 
-		if gold, ok := s.catalog.AwakenPriceByGroup[awakenRow.CostumeAwakenPriceGroupId]; ok {
-			user.ConsumableItems[s.config.ConsumableItemIdForGold] -= gold
+		if gold, ok := catalog.AwakenPriceByGroup[awakenRow.CostumeAwakenPriceGroupId]; ok {
+			user.ConsumableItems[config.ConsumableItemIdForGold] -= gold
 			log.Printf("[CostumeService] Awaken: gold cost=%d", gold)
 		}
 
@@ -137,7 +143,7 @@ func (s *CostumeServiceServer) Awaken(ctx context.Context, req *pb.AwakenRequest
 		user.Costumes[req.UserCostumeUuid] = costume
 		log.Printf("[CostumeService] Awaken: costumeId=%d awakenCount=%d", costume.CostumeId, nextStep)
 
-		effectSteps, ok := s.catalog.AwakenEffectsByGroupAndStep[awakenRow.CostumeAwakenEffectGroupId]
+		effectSteps, ok := catalog.AwakenEffectsByGroupAndStep[awakenRow.CostumeAwakenEffectGroupId]
 		if !ok {
 			return
 		}
@@ -148,11 +154,11 @@ func (s *CostumeServiceServer) Awaken(ctx context.Context, req *pb.AwakenRequest
 
 		switch model.CostumeAwakenEffectType(effect.CostumeAwakenEffectType) {
 		case model.CostumeAwakenEffectTypeStatusUp:
-			s.applyAwakenStatusUp(user, req.UserCostumeUuid, effect.CostumeAwakenEffectId, nowMillis)
+			applyCostumeAwakenStatusUp(catalog, user, req.UserCostumeUuid, effect.CostumeAwakenEffectId, nowMillis)
 		case model.CostumeAwakenEffectTypeAbility:
 			log.Printf("[CostumeService] Awaken: ability effect id=%d (client-resolved)", effect.CostumeAwakenEffectId)
 		case model.CostumeAwakenEffectTypeItemAcquire:
-			s.applyAwakenItemAcquire(user, effect.CostumeAwakenEffectId, nowMillis)
+			applyCostumeAwakenItemAcquire(catalog, user, effect.CostumeAwakenEffectId, nowMillis)
 		default:
 			log.Printf("[CostumeService] Awaken: unknown effect type=%d", effect.CostumeAwakenEffectType)
 		}
@@ -164,8 +170,8 @@ func (s *CostumeServiceServer) Awaken(ctx context.Context, req *pb.AwakenRequest
 	return &pb.AwakenResponse{}, nil
 }
 
-func (s *CostumeServiceServer) applyAwakenStatusUp(user *store.UserState, costumeUuid string, statusUpGroupId int32, nowMillis int64) {
-	rows, ok := s.catalog.AwakenStatusUpByGroup[statusUpGroupId]
+func applyCostumeAwakenStatusUp(catalog *masterdata.CostumeCatalog, user *store.UserState, costumeUuid string, statusUpGroupId int32, nowMillis int64) {
+	rows, ok := catalog.AwakenStatusUpByGroup[statusUpGroupId]
 	if !ok {
 		log.Printf("[CostumeService] Awaken: status up group %d not found", statusUpGroupId)
 		return
@@ -201,8 +207,8 @@ func (s *CostumeServiceServer) applyAwakenStatusUp(user *store.UserState, costum
 	}
 }
 
-func (s *CostumeServiceServer) applyAwakenItemAcquire(user *store.UserState, itemAcquireId int32, nowMillis int64) {
-	acq, ok := s.catalog.AwakenItemAcquireById[itemAcquireId]
+func applyCostumeAwakenItemAcquire(catalog *masterdata.CostumeCatalog, user *store.UserState, itemAcquireId int32, nowMillis int64) {
+	acq, ok := catalog.AwakenItemAcquireById[itemAcquireId]
 	if !ok {
 		log.Printf("[CostumeService] Awaken: item acquire id=%d not found", itemAcquireId)
 		return
@@ -226,6 +232,9 @@ func (s *CostumeServiceServer) applyAwakenItemAcquire(user *store.UserState, ite
 func (s *CostumeServiceServer) EnhanceActiveSkill(ctx context.Context, req *pb.EnhanceActiveSkillRequest) (*pb.EnhanceActiveSkillResponse, error) {
 	log.Printf("[CostumeService] EnhanceActiveSkill: uuid=%s addLevel=%d", req.UserCostumeUuid, req.AddLevelCount)
 
+	cat := s.holder.Get()
+	catalog := cat.Costume
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -236,13 +245,13 @@ func (s *CostumeServiceServer) EnhanceActiveSkill(ctx context.Context, req *pb.E
 			return
 		}
 
-		cm, ok := s.catalog.Costumes[costume.CostumeId]
+		cm, ok := catalog.Costumes[costume.CostumeId]
 		if !ok {
 			log.Printf("[CostumeService] EnhanceActiveSkill: costume master id=%d not found", costume.CostumeId)
 			return
 		}
 
-		groupRows := s.catalog.ActiveSkillGroupsByGroupId[cm.CostumeActiveSkillGroupId]
+		groupRows := catalog.ActiveSkillGroupsByGroupId[cm.CostumeActiveSkillGroupId]
 		enhanceMatId := int32(-1)
 		for _, g := range groupRows {
 			if g.CostumeLimitBreakCountLowerLimit <= costume.LimitBreakCount {
@@ -259,7 +268,7 @@ func (s *CostumeServiceServer) EnhanceActiveSkill(ctx context.Context, req *pb.E
 		skill := user.CostumeActiveSkills[req.UserCostumeUuid]
 		currentLevel := skill.Level
 
-		maxLevelFunc, ok := s.catalog.ActiveSkillMaxLevelByRarity[cm.RarityType]
+		maxLevelFunc, ok := catalog.ActiveSkillMaxLevelByRarity[cm.RarityType]
 		if !ok {
 			log.Printf("[CostumeService] EnhanceActiveSkill: no max level func for rarity=%d", cm.RarityType)
 			return
@@ -277,7 +286,7 @@ func (s *CostumeServiceServer) EnhanceActiveSkill(ctx context.Context, req *pb.E
 
 		for lvl := currentLevel; lvl < currentLevel+addCount; lvl++ {
 			key := [2]int32{enhanceMatId, lvl}
-			mats := s.catalog.ActiveSkillEnhanceMats[key]
+			mats := catalog.ActiveSkillEnhanceMats[key]
 			for _, mat := range mats {
 				cur := user.Materials[mat.MaterialId]
 				cost := mat.Count
@@ -288,9 +297,9 @@ func (s *CostumeServiceServer) EnhanceActiveSkill(ctx context.Context, req *pb.E
 				user.Materials[mat.MaterialId] = cur - cost
 			}
 
-			if costFunc, ok := s.catalog.ActiveSkillCostByRarity[cm.RarityType]; ok {
+			if costFunc, ok := catalog.ActiveSkillCostByRarity[cm.RarityType]; ok {
 				goldCost := costFunc.Evaluate(lvl + 1)
-				user.ConsumableItems[s.config.ConsumableItemIdForGold] -= goldCost
+				user.ConsumableItems[config.ConsumableItemIdForGold] -= goldCost
 			}
 		}
 
@@ -310,6 +319,9 @@ func (s *CostumeServiceServer) EnhanceActiveSkill(ctx context.Context, req *pb.E
 func (s *CostumeServiceServer) LimitBreak(ctx context.Context, req *pb.LimitBreakRequest) (*pb.LimitBreakResponse, error) {
 	log.Printf("[CostumeService] LimitBreak: uuid=%s materials=%v", req.UserCostumeUuid, req.Materials)
 
+	cat := s.holder.Get()
+	catalog := cat.Costume
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -320,12 +332,12 @@ func (s *CostumeServiceServer) LimitBreak(ctx context.Context, req *pb.LimitBrea
 			return
 		}
 
-		if costume.LimitBreakCount >= s.config.CostumeLimitBreakAvailableCount {
+		if costume.LimitBreakCount >= config.CostumeLimitBreakAvailableCount {
 			log.Printf("[CostumeService] LimitBreak: already at max limit break %d", costume.LimitBreakCount)
 			return
 		}
 
-		cm, ok := s.catalog.Costumes[costume.CostumeId]
+		cm, ok := catalog.Costumes[costume.CostumeId]
 		if !ok {
 			log.Printf("[CostumeService] LimitBreak: costume master id=%d not found", costume.CostumeId)
 			return
@@ -342,9 +354,9 @@ func (s *CostumeServiceServer) LimitBreak(ctx context.Context, req *pb.LimitBrea
 			totalMaterialCount += count
 		}
 
-		if costFunc, ok := s.catalog.LimitBreakCostByRarity[cm.RarityType]; ok && totalMaterialCount > 0 {
+		if costFunc, ok := catalog.LimitBreakCostByRarity[cm.RarityType]; ok && totalMaterialCount > 0 {
 			goldCost := costFunc.Evaluate(totalMaterialCount)
-			user.ConsumableItems[s.config.ConsumableItemIdForGold] -= goldCost
+			user.ConsumableItems[config.ConsumableItemIdForGold] -= goldCost
 			log.Printf("[CostumeService] LimitBreak: gold cost=%d", goldCost)
 		}
 
@@ -363,6 +375,9 @@ func (s *CostumeServiceServer) LimitBreak(ctx context.Context, req *pb.LimitBrea
 func (s *CostumeServiceServer) UnlockLotteryEffectSlot(ctx context.Context, req *pb.UnlockLotteryEffectSlotRequest) (*pb.UnlockLotteryEffectSlotResponse, error) {
 	log.Printf("[CostumeService] UnlockLotteryEffectSlot: uuid=%s slot=%d", req.UserCostumeUuid, req.SlotNumber)
 
+	cat := s.holder.Get()
+	catalog := cat.Costume
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -373,15 +388,15 @@ func (s *CostumeServiceServer) UnlockLotteryEffectSlot(ctx context.Context, req 
 			return
 		}
 
-		effectRow, ok := s.catalog.LotteryEffects[[2]int32{costume.CostumeId, req.SlotNumber}]
+		effectRow, ok := catalog.LotteryEffects[[2]int32{costume.CostumeId, req.SlotNumber}]
 		if !ok {
 			log.Printf("[CostumeService] UnlockLotteryEffectSlot: no lottery effect for costumeId=%d slot=%d", costume.CostumeId, req.SlotNumber)
 			return
 		}
 
-		user.ConsumableItems[s.config.ConsumableItemIdForGold] -= s.config.CostumeLotteryEffectUnlockSlotConsumeGold
+		user.ConsumableItems[config.ConsumableItemIdForGold] -= config.CostumeLotteryEffectUnlockSlotConsumeGold
 
-		mats := s.catalog.LotteryEffectMats[effectRow.CostumeLotteryEffectUnlockMaterialGroupId]
+		mats := catalog.LotteryEffectMats[effectRow.CostumeLotteryEffectUnlockMaterialGroupId]
 		for _, mat := range mats {
 			cur := user.Materials[mat.MaterialId]
 			cost := mat.Count
@@ -418,6 +433,9 @@ func (s *CostumeServiceServer) UnlockLotteryEffectSlot(ctx context.Context, req 
 func (s *CostumeServiceServer) DrawLotteryEffect(ctx context.Context, req *pb.DrawLotteryEffectRequest) (*pb.DrawLotteryEffectResponse, error) {
 	log.Printf("[CostumeService] DrawLotteryEffect: uuid=%s slot=%d", req.UserCostumeUuid, req.SlotNumber)
 
+	cat := s.holder.Get()
+	catalog := cat.Costume
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -428,21 +446,21 @@ func (s *CostumeServiceServer) DrawLotteryEffect(ctx context.Context, req *pb.Dr
 			return
 		}
 
-		effectRow, ok := s.catalog.LotteryEffects[[2]int32{costume.CostumeId, req.SlotNumber}]
+		effectRow, ok := catalog.LotteryEffects[[2]int32{costume.CostumeId, req.SlotNumber}]
 		if !ok {
 			log.Printf("[CostumeService] DrawLotteryEffect: no lottery effect for costumeId=%d slot=%d", costume.CostumeId, req.SlotNumber)
 			return
 		}
 
-		oddsPool := s.catalog.LotteryEffectOdds[effectRow.CostumeLotteryEffectOddsGroupId]
+		oddsPool := catalog.LotteryEffectOdds[effectRow.CostumeLotteryEffectOddsGroupId]
 		if len(oddsPool) == 0 {
 			log.Printf("[CostumeService] DrawLotteryEffect: empty odds pool for groupId=%d", effectRow.CostumeLotteryEffectOddsGroupId)
 			return
 		}
 
-		user.ConsumableItems[s.config.ConsumableItemIdForGold] -= s.config.CostumeLotteryEffectDrawSlotConsumeGold
+		user.ConsumableItems[config.ConsumableItemIdForGold] -= config.CostumeLotteryEffectDrawSlotConsumeGold
 
-		mats := s.catalog.LotteryEffectMats[effectRow.CostumeLotteryEffectDrawMaterialGroupId]
+		mats := catalog.LotteryEffectMats[effectRow.CostumeLotteryEffectDrawMaterialGroupId]
 		for _, mat := range mats {
 			cur := user.Materials[mat.MaterialId]
 			cost := mat.Count

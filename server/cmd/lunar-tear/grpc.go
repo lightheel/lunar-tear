@@ -6,10 +6,8 @@ import (
 	"strconv"
 
 	pb "lunar-tear/server/gen/proto"
-	"lunar-tear/server/internal/gacha"
 	"lunar-tear/server/internal/interceptor"
-	"lunar-tear/server/internal/masterdata"
-	"lunar-tear/server/internal/questflow"
+	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/service"
 	"lunar-tear/server/internal/store"
 
@@ -40,27 +38,7 @@ func startGRPC(
 		store.UserRepository
 		store.SessionRepository
 	},
-	questEngine *questflow.QuestHandler,
-	gachaHandler *gacha.GachaHandler,
-	gachaEntries []store.GachaCatalogEntry,
-	cageOrnamentCatalog *masterdata.CageOrnamentCatalog,
-	loginBonusCatalog *masterdata.LoginBonusCatalog,
-	characterViewerCatalog *masterdata.CharacterViewerCatalog,
-	shopCatalog *masterdata.ShopCatalog,
-	costumeCatalog *masterdata.CostumeCatalog,
-	omikujiCatalog *masterdata.OmikujiCatalog,
-	weaponCatalog *masterdata.WeaponCatalog,
-	exploreCatalog *masterdata.ExploreCatalog,
-	gimmickCatalog *masterdata.GimmickCatalog,
-	characterBoardCatalog *masterdata.CharacterBoardCatalog,
-	partsCatalog *masterdata.PartsCatalog,
-	characterRebirthCatalog *masterdata.CharacterRebirthCatalog,
-	companionCatalog *masterdata.CompanionCatalog,
-	materialCatalog *masterdata.MaterialCatalog,
-	consumableItemCatalog *masterdata.ConsumableItemCatalog,
-	gameConfig *masterdata.GameConfig,
-	sideStoryCatalog *masterdata.SideStoryCatalog,
-	bigHuntCatalog *masterdata.BigHuntCatalog,
+	holder *runtime.Holder,
 ) *grpc.Server {
 	lis, err := net.Listen("tcp", listenAddr)
 	if err != nil {
@@ -74,33 +52,7 @@ func startGRPC(
 		grpc.UnknownServiceHandler(interceptor.UnknownService),
 	)
 
-	registerServices(grpcServer,
-		publicAddr,
-		octoURL,
-		authURL,
-		userStore,
-		questEngine,
-		gachaHandler,
-		gachaEntries,
-		cageOrnamentCatalog,
-		loginBonusCatalog,
-		characterViewerCatalog,
-		shopCatalog,
-		costumeCatalog,
-		omikujiCatalog,
-		weaponCatalog,
-		exploreCatalog,
-		gimmickCatalog,
-		characterBoardCatalog,
-		partsCatalog,
-		characterRebirthCatalog,
-		companionCatalog,
-		materialCatalog,
-		consumableItemCatalog,
-		gameConfig,
-		sideStoryCatalog,
-		bigHuntCatalog,
-	)
+	registerServices(grpcServer, publicAddr, octoURL, authURL, userStore, holder)
 
 	reflection.Register(grpcServer)
 
@@ -124,66 +76,46 @@ func registerServices(
 		store.UserRepository
 		store.SessionRepository
 	},
-	questEngine *questflow.QuestHandler,
-	gachaHandler *gacha.GachaHandler,
-	gachaEntries []store.GachaCatalogEntry,
-	cageOrnamentCatalog *masterdata.CageOrnamentCatalog,
-	loginBonusCatalog *masterdata.LoginBonusCatalog,
-	characterViewerCatalog *masterdata.CharacterViewerCatalog,
-	shopCatalog *masterdata.ShopCatalog,
-	costumeCatalog *masterdata.CostumeCatalog,
-	omikujiCatalog *masterdata.OmikujiCatalog,
-	weaponCatalog *masterdata.WeaponCatalog,
-	exploreCatalog *masterdata.ExploreCatalog,
-	gimmickCatalog *masterdata.GimmickCatalog,
-	characterBoardCatalog *masterdata.CharacterBoardCatalog,
-	partsCatalog *masterdata.PartsCatalog,
-	characterRebirthCatalog *masterdata.CharacterRebirthCatalog,
-	companionCatalog *masterdata.CompanionCatalog,
-	materialCatalog *masterdata.MaterialCatalog,
-	consumableItemCatalog *masterdata.ConsumableItemCatalog,
-	gameConfig *masterdata.GameConfig,
-	sideStoryCatalog *masterdata.SideStoryCatalog,
-	bigHuntCatalog *masterdata.BigHuntCatalog,
+	holder *runtime.Holder,
 ) {
 	pubHost, pubPortStr, _ := net.SplitHostPort(publicAddr)
 	pubPort, _ := strconv.Atoi(pubPortStr)
 
-	pb.RegisterBannerServiceServer(srv, service.NewBannerServiceServer(gachaEntries))
+	pb.RegisterBannerServiceServer(srv, service.NewBannerServiceServer(holder))
 	pb.RegisterUserServiceServer(srv, service.NewUserServiceServer(userStore, userStore, authURL))
 	pb.RegisterBattleServiceServer(srv, service.NewBattleServiceServer(userStore, userStore))
 	pb.RegisterConfigServiceServer(srv, service.NewConfigServiceServer(pubHost, int32(pubPort), octoURL))
 	pb.RegisterDataServiceServer(srv, service.NewDataServiceServer(userStore, userStore))
-	pb.RegisterTutorialServiceServer(srv, service.NewTutorialServiceServer(userStore, userStore, questEngine))
-	pb.RegisterGachaServiceServer(srv, service.NewGachaServiceServer(userStore, userStore, gachaEntries, gachaHandler))
+	pb.RegisterTutorialServiceServer(srv, service.NewTutorialServiceServer(userStore, userStore, holder))
+	pb.RegisterGachaServiceServer(srv, service.NewGachaServiceServer(userStore, userStore, holder))
 	pb.RegisterGiftServiceServer(srv, service.NewGiftServiceServer(userStore, userStore))
 	pb.RegisterGamePlayServiceServer(srv, service.NewGameplayServiceServer())
-	pb.RegisterGimmickServiceServer(srv, service.NewGimmickServiceServer(userStore, userStore, gimmickCatalog))
-	pb.RegisterQuestServiceServer(srv, service.NewQuestServiceServer(userStore, userStore, questEngine))
+	pb.RegisterGimmickServiceServer(srv, service.NewGimmickServiceServer(userStore, userStore, holder))
+	pb.RegisterQuestServiceServer(srv, service.NewQuestServiceServer(userStore, userStore, holder))
 	pb.RegisterNotificationServiceServer(srv, service.NewNotificationServiceServer(userStore, userStore))
-	pb.RegisterCageOrnamentServiceServer(srv, service.NewCageOrnamentServiceServer(userStore, userStore, cageOrnamentCatalog, questEngine.Granter))
+	pb.RegisterCageOrnamentServiceServer(srv, service.NewCageOrnamentServiceServer(userStore, userStore, holder))
 	pb.RegisterDeckServiceServer(srv, service.NewDeckServiceServer(userStore, userStore))
 	pb.RegisterFriendServiceServer(srv, service.NewFriendServiceServer(userStore, userStore))
-	pb.RegisterLoginBonusServiceServer(srv, service.NewLoginBonusServiceServer(userStore, userStore, loginBonusCatalog))
+	pb.RegisterLoginBonusServiceServer(srv, service.NewLoginBonusServiceServer(userStore, userStore, holder))
 	pb.RegisterNaviCutInServiceServer(srv, service.NewNaviCutInServiceServer(userStore, userStore))
 	pb.RegisterContentsStoryServiceServer(srv, service.NewContentsStoryServiceServer(userStore, userStore))
 	pb.RegisterDokanServiceServer(srv, service.NewDokanServiceServer(userStore, userStore))
 	pb.RegisterPortalCageServiceServer(srv, service.NewPortalCageServiceServer(userStore, userStore))
-	pb.RegisterCharacterViewerServiceServer(srv, service.NewCharacterViewerServiceServer(userStore, userStore, characterViewerCatalog))
+	pb.RegisterCharacterViewerServiceServer(srv, service.NewCharacterViewerServiceServer(userStore, userStore, holder))
 	pb.RegisterMissionServiceServer(srv, service.NewMissionServiceServer(userStore, userStore))
-	pb.RegisterShopServiceServer(srv, service.NewShopServiceServer(userStore, userStore, shopCatalog, questEngine.Granter))
-	pb.RegisterCostumeServiceServer(srv, service.NewCostumeServiceServer(userStore, userStore, costumeCatalog, gameConfig))
+	pb.RegisterShopServiceServer(srv, service.NewShopServiceServer(userStore, userStore, holder))
+	pb.RegisterCostumeServiceServer(srv, service.NewCostumeServiceServer(userStore, userStore, holder))
 	pb.RegisterMovieServiceServer(srv, service.NewMovieServiceServer(userStore, userStore))
-	pb.RegisterOmikujiServiceServer(srv, service.NewOmikujiServiceServer(userStore, userStore, omikujiCatalog))
-	pb.RegisterWeaponServiceServer(srv, service.NewWeaponServiceServer(userStore, userStore, weaponCatalog, gameConfig))
-	pb.RegisterExploreServiceServer(srv, service.NewExploreServiceServer(userStore, userStore, exploreCatalog))
-	pb.RegisterCharacterBoardServiceServer(srv, service.NewCharacterBoardServiceServer(userStore, userStore, characterBoardCatalog))
-	pb.RegisterPartsServiceServer(srv, service.NewPartsServiceServer(userStore, userStore, partsCatalog, gameConfig))
-	pb.RegisterCharacterServiceServer(srv, service.NewCharacterServiceServer(userStore, userStore, characterRebirthCatalog, gameConfig))
-	pb.RegisterCompanionServiceServer(srv, service.NewCompanionServiceServer(userStore, userStore, companionCatalog, gameConfig))
-	pb.RegisterMaterialServiceServer(srv, service.NewMaterialServiceServer(userStore, userStore, materialCatalog, gameConfig))
-	pb.RegisterConsumableItemServiceServer(srv, service.NewConsumableItemServiceServer(userStore, userStore, consumableItemCatalog, gameConfig))
-	pb.RegisterSideStoryQuestServiceServer(srv, service.NewSideStoryQuestServiceServer(userStore, userStore, sideStoryCatalog))
-	pb.RegisterBigHuntServiceServer(srv, service.NewBigHuntServiceServer(userStore, userStore, bigHuntCatalog, questEngine))
-	pb.RegisterRewardServiceServer(srv, service.NewRewardServiceServer(userStore, userStore, bigHuntCatalog, questEngine.Granter))
+	pb.RegisterOmikujiServiceServer(srv, service.NewOmikujiServiceServer(userStore, userStore, holder))
+	pb.RegisterWeaponServiceServer(srv, service.NewWeaponServiceServer(userStore, userStore, holder))
+	pb.RegisterExploreServiceServer(srv, service.NewExploreServiceServer(userStore, userStore, holder))
+	pb.RegisterCharacterBoardServiceServer(srv, service.NewCharacterBoardServiceServer(userStore, userStore, holder))
+	pb.RegisterPartsServiceServer(srv, service.NewPartsServiceServer(userStore, userStore, holder))
+	pb.RegisterCharacterServiceServer(srv, service.NewCharacterServiceServer(userStore, userStore, holder))
+	pb.RegisterCompanionServiceServer(srv, service.NewCompanionServiceServer(userStore, userStore, holder))
+	pb.RegisterMaterialServiceServer(srv, service.NewMaterialServiceServer(userStore, userStore, holder))
+	pb.RegisterConsumableItemServiceServer(srv, service.NewConsumableItemServiceServer(userStore, userStore, holder))
+	pb.RegisterSideStoryQuestServiceServer(srv, service.NewSideStoryQuestServiceServer(userStore, userStore, holder))
+	pb.RegisterBigHuntServiceServer(srv, service.NewBigHuntServiceServer(userStore, userStore, holder))
+	pb.RegisterRewardServiceServer(srv, service.NewRewardServiceServer(userStore, userStore, holder))
 }

@@ -7,6 +7,7 @@ import (
 	pb "lunar-tear/server/gen/proto"
 	"lunar-tear/server/internal/masterdata"
 	"lunar-tear/server/internal/model"
+	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 )
 
@@ -14,43 +15,44 @@ type CharacterBoardServiceServer struct {
 	pb.UnimplementedCharacterBoardServiceServer
 	users    store.UserRepository
 	sessions store.SessionRepository
-	catalog  *masterdata.CharacterBoardCatalog
+	holder   *runtime.Holder
 }
 
-func NewCharacterBoardServiceServer(users store.UserRepository, sessions store.SessionRepository, catalog *masterdata.CharacterBoardCatalog) *CharacterBoardServiceServer {
-	return &CharacterBoardServiceServer{users: users, sessions: sessions, catalog: catalog}
+func NewCharacterBoardServiceServer(users store.UserRepository, sessions store.SessionRepository, holder *runtime.Holder) *CharacterBoardServiceServer {
+	return &CharacterBoardServiceServer{users: users, sessions: sessions, holder: holder}
 }
 
 func (s *CharacterBoardServiceServer) ReleasePanel(ctx context.Context, req *pb.ReleasePanelRequest) (*pb.ReleasePanelResponse, error) {
 	log.Printf("[CharacterBoardService] ReleasePanel: panelIds=%v", req.CharacterBoardPanelId)
 
+	catalog := s.holder.Get().CharacterBoard
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 
 	s.users.UpdateUser(userId, func(user *store.UserState) {
 		for _, panelId := range req.CharacterBoardPanelId {
-			panel, ok := s.catalog.PanelById[panelId]
+			panel, ok := catalog.PanelById[panelId]
 			if !ok {
 				log.Printf("[CharacterBoardService] unknown panelId=%d, skipping", panelId)
 				continue
 			}
 
-			s.consumeCosts(user, panel)
-			s.setReleaseBit(user, panel)
-			s.applyEffects(user, panel)
+			consumeBoardCosts(catalog, user, panel)
+			setBoardReleaseBit(user, panel)
+			applyBoardEffects(catalog, user, panel)
 		}
 	})
 
 	return &pb.ReleasePanelResponse{}, nil
 }
 
-func (s *CharacterBoardServiceServer) consumeCosts(user *store.UserState, panel masterdata.EntityMCharacterBoardPanel) {
-	costs := s.catalog.ReleaseCostsByGroupId[panel.CharacterBoardPanelReleasePossessionGroupId]
+func consumeBoardCosts(catalog *masterdata.CharacterBoardCatalog, user *store.UserState, panel masterdata.EntityMCharacterBoardPanel) {
+	costs := catalog.ReleaseCostsByGroupId[panel.CharacterBoardPanelReleasePossessionGroupId]
 	for _, cost := range costs {
 		store.DeductPossession(user, model.PossessionType(cost.PossessionType), cost.PossessionId, cost.Count)
 	}
 }
 
-func (s *CharacterBoardServiceServer) setReleaseBit(user *store.UserState, panel masterdata.EntityMCharacterBoardPanel) {
+func setBoardReleaseBit(user *store.UserState, panel masterdata.EntityMCharacterBoardPanel) {
 	boardId := panel.CharacterBoardId
 	board := user.CharacterBoards[boardId]
 	board.CharacterBoardId = boardId
@@ -73,26 +75,26 @@ func (s *CharacterBoardServiceServer) setReleaseBit(user *store.UserState, panel
 	user.CharacterBoards[boardId] = board
 }
 
-func (s *CharacterBoardServiceServer) applyEffects(user *store.UserState, panel masterdata.EntityMCharacterBoardPanel) {
-	effects := s.catalog.ReleaseEffectsByGroupId[panel.CharacterBoardPanelReleaseEffectGroupId]
+func applyBoardEffects(catalog *masterdata.CharacterBoardCatalog, user *store.UserState, panel masterdata.EntityMCharacterBoardPanel) {
+	effects := catalog.ReleaseEffectsByGroupId[panel.CharacterBoardPanelReleaseEffectGroupId]
 	for _, eff := range effects {
 		switch model.CharacterBoardEffectType(eff.CharacterBoardEffectType) {
 		case model.CharacterBoardEffectTypeAbility:
-			s.applyAbilityEffect(user, eff)
+			applyBoardAbilityEffect(catalog, user, eff)
 		case model.CharacterBoardEffectTypeStatusUp:
-			s.applyStatusUpEffect(user, eff)
+			applyBoardStatusUpEffect(catalog, user, eff)
 		}
 	}
 }
 
-func (s *CharacterBoardServiceServer) applyAbilityEffect(user *store.UserState, eff masterdata.EntityMCharacterBoardPanelReleaseEffectGroup) {
-	ability, ok := s.catalog.AbilityById[eff.CharacterBoardEffectId]
+func applyBoardAbilityEffect(catalog *masterdata.CharacterBoardCatalog, user *store.UserState, eff masterdata.EntityMCharacterBoardPanelReleaseEffectGroup) {
+	ability, ok := catalog.AbilityById[eff.CharacterBoardEffectId]
 	if !ok {
 		log.Printf("[CharacterBoardService] unknown abilityId=%d", eff.CharacterBoardEffectId)
 		return
 	}
 
-	characterId := s.resolveCharacterId(ability.CharacterBoardEffectTargetGroupId)
+	characterId := resolveBoardCharacterId(catalog, ability.CharacterBoardEffectTargetGroupId)
 	if characterId == 0 {
 		return
 	}
@@ -103,21 +105,21 @@ func (s *CharacterBoardServiceServer) applyAbilityEffect(user *store.UserState, 
 	state.AbilityId = ability.AbilityId
 	state.Level += eff.EffectValue
 
-	if maxLvl, ok := s.catalog.AbilityMaxLevel[key]; ok && state.Level > maxLvl {
+	if maxLvl, ok := catalog.AbilityMaxLevel[key]; ok && state.Level > maxLvl {
 		state.Level = maxLvl
 	}
 
 	user.CharacterBoardAbilities[key] = state
 }
 
-func (s *CharacterBoardServiceServer) applyStatusUpEffect(user *store.UserState, eff masterdata.EntityMCharacterBoardPanelReleaseEffectGroup) {
-	statusUp, ok := s.catalog.StatusUpById[eff.CharacterBoardEffectId]
+func applyBoardStatusUpEffect(catalog *masterdata.CharacterBoardCatalog, user *store.UserState, eff masterdata.EntityMCharacterBoardPanelReleaseEffectGroup) {
+	statusUp, ok := catalog.StatusUpById[eff.CharacterBoardEffectId]
 	if !ok {
 		log.Printf("[CharacterBoardService] unknown statusUpId=%d", eff.CharacterBoardEffectId)
 		return
 	}
 
-	characterId := s.resolveCharacterId(statusUp.CharacterBoardEffectTargetGroupId)
+	characterId := resolveBoardCharacterId(catalog, statusUp.CharacterBoardEffectTargetGroupId)
 	if characterId == 0 {
 		return
 	}
@@ -151,8 +153,8 @@ func (s *CharacterBoardServiceServer) applyStatusUpEffect(user *store.UserState,
 	user.CharacterBoardStatusUps[key] = state
 }
 
-func (s *CharacterBoardServiceServer) resolveCharacterId(targetGroupId int32) int32 {
-	targets := s.catalog.EffectTargetsByGroupId[targetGroupId]
+func resolveBoardCharacterId(catalog *masterdata.CharacterBoardCatalog, targetGroupId int32) int32 {
+	targets := catalog.EffectTargetsByGroupId[targetGroupId]
 	for _, t := range targets {
 		if t.TargetValue != 0 {
 			return t.TargetValue

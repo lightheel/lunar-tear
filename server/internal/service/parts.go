@@ -9,6 +9,7 @@ import (
 	pb "lunar-tear/server/gen/proto"
 	"lunar-tear/server/internal/gametime"
 	"lunar-tear/server/internal/masterdata"
+	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 )
 
@@ -18,17 +19,19 @@ type PartsServiceServer struct {
 	pb.UnimplementedPartsServiceServer
 	users    store.UserRepository
 	sessions store.SessionRepository
-	catalog  *masterdata.PartsCatalog
-	config   *masterdata.GameConfig
+	holder   *runtime.Holder
 }
 
-func NewPartsServiceServer(users store.UserRepository, sessions store.SessionRepository, catalog *masterdata.PartsCatalog, config *masterdata.GameConfig) *PartsServiceServer {
-	return &PartsServiceServer{users: users, sessions: sessions, catalog: catalog, config: config}
+func NewPartsServiceServer(users store.UserRepository, sessions store.SessionRepository, holder *runtime.Holder) *PartsServiceServer {
+	return &PartsServiceServer{users: users, sessions: sessions, holder: holder}
 }
 
 func (s *PartsServiceServer) Sell(ctx context.Context, req *pb.PartsSellRequest) (*pb.PartsSellResponse, error) {
 	log.Printf("[PartsService] Sell: %d part(s)", len(req.UserPartsUuid))
 
+	cat := s.holder.Get()
+	catalog := cat.Parts
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 
 	_, err := s.users.UpdateUser(userId, func(user *store.UserState) {
@@ -44,13 +47,13 @@ func (s *PartsServiceServer) Sell(ctx context.Context, req *pb.PartsSellRequest)
 				continue
 			}
 
-			partDef, ok := s.catalog.PartsById[part.PartsId]
+			partDef, ok := catalog.PartsById[part.PartsId]
 			if !ok {
 				log.Printf("[PartsService] Sell: partsId=%d not in catalog, skipping", part.PartsId)
 				continue
 			}
 
-			sellFunc, ok := s.catalog.SellPriceByRarity[partDef.RarityType]
+			sellFunc, ok := catalog.SellPriceByRarity[partDef.RarityType]
 			if !ok {
 				log.Printf("[PartsService] Sell: no sell price func for rarity=%d, skipping", partDef.RarityType)
 				continue
@@ -68,7 +71,7 @@ func (s *PartsServiceServer) Sell(ctx context.Context, req *pb.PartsSellRequest)
 		}
 
 		if totalGold > 0 {
-			user.ConsumableItems[s.config.ConsumableItemIdForGold] += totalGold
+			user.ConsumableItems[config.ConsumableItemIdForGold] += totalGold
 			log.Printf("[PartsService] Sell: total gold +%d", totalGold)
 		}
 	})
@@ -82,6 +85,9 @@ func (s *PartsServiceServer) Sell(ctx context.Context, req *pb.PartsSellRequest)
 func (s *PartsServiceServer) Enhance(ctx context.Context, req *pb.PartsEnhanceRequest) (*pb.PartsEnhanceResponse, error) {
 	log.Printf("[PartsService] Enhance: uuid=%s", req.UserPartsUuid)
 
+	cat := s.holder.Get()
+	catalog := cat.Parts
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -99,33 +105,33 @@ func (s *PartsServiceServer) Enhance(ctx context.Context, req *pb.PartsEnhanceRe
 			return
 		}
 
-		partDef, ok := s.catalog.PartsById[part.PartsId]
+		partDef, ok := catalog.PartsById[part.PartsId]
 		if !ok {
 			log.Printf("[PartsService] Enhance: part master id=%d not found", part.PartsId)
 			return
 		}
 
-		rarity, ok := s.catalog.RarityByRarityType[partDef.RarityType]
+		rarity, ok := catalog.RarityByRarityType[partDef.RarityType]
 		if !ok {
 			log.Printf("[PartsService] Enhance: rarity type=%d not found", partDef.RarityType)
 			return
 		}
 
 		goldCost := int32(0)
-		if prices, ok := s.catalog.PriceByGroupAndLevel[rarity.PartsLevelUpPriceGroupId]; ok {
+		if prices, ok := catalog.PriceByGroupAndLevel[rarity.PartsLevelUpPriceGroupId]; ok {
 			goldCost = prices[part.Level]
 		}
 
-		currentGold := user.ConsumableItems[s.config.ConsumableItemIdForGold]
+		currentGold := user.ConsumableItems[config.ConsumableItemIdForGold]
 		if currentGold < goldCost {
 			log.Printf("[PartsService] Enhance: insufficient gold have=%d need=%d", currentGold, goldCost)
 			return
 		}
 
-		user.ConsumableItems[s.config.ConsumableItemIdForGold] -= goldCost
+		user.ConsumableItems[config.ConsumableItemIdForGold] -= goldCost
 
 		successRate := int32(1000)
-		if rates, ok := s.catalog.RateByGroupAndLevel[rarity.PartsLevelUpRateGroupId]; ok {
+		if rates, ok := catalog.RateByGroupAndLevel[rarity.PartsLevelUpRateGroupId]; ok {
 			if r, ok := rates[part.Level]; ok {
 				successRate = r
 			}
@@ -137,7 +143,7 @@ func (s *PartsServiceServer) Enhance(ctx context.Context, req *pb.PartsEnhanceRe
 			log.Printf("[PartsService] Enhance: SUCCESS partsId=%d level %d -> %d (rate=%d‰, cost=%d gold)",
 				part.PartsId, part.Level-1, part.Level, successRate, goldCost)
 
-			s.grantSubStatuses(user, req.UserPartsUuid, part, partDef, nowMillis)
+			grantPartsSubStatuses(catalog, user, req.UserPartsUuid, part, partDef, nowMillis)
 		} else {
 			log.Printf("[PartsService] Enhance: FAIL partsId=%d stays level %d (rate=%d‰, cost=%d gold)",
 				part.PartsId, part.Level, successRate, goldCost)
@@ -155,9 +161,9 @@ func (s *PartsServiceServer) Enhance(ctx context.Context, req *pb.PartsEnhanceRe
 	}, nil
 }
 
-func (s *PartsServiceServer) grantSubStatuses(user *store.UserState, uuid string, part store.PartsState, partDef masterdata.EntityMParts, nowMillis int64) {
-	unlockLevels := s.catalog.SubStatusUnlockLvls[partDef.RarityType]
-	pool := s.catalog.SubStatusPool[partDef.PartsStatusSubLotteryGroupId]
+func grantPartsSubStatuses(catalog *masterdata.PartsCatalog, user *store.UserState, uuid string, part store.PartsState, partDef masterdata.EntityMParts, nowMillis int64) {
+	unlockLevels := catalog.SubStatusUnlockLvls[partDef.RarityType]
+	pool := catalog.SubStatusPool[partDef.PartsStatusSubLotteryGroupId]
 	if len(pool) == 0 {
 		return
 	}
@@ -173,13 +179,13 @@ func (s *PartsServiceServer) grantSubStatuses(user *store.UserState, uuid string
 		}
 
 		pick := pool[rand.Intn(len(pool))]
-		def, ok := s.catalog.PartsStatusMainById[pick]
+		def, ok := catalog.PartsStatusMainById[pick]
 		if !ok {
 			continue
 		}
 
 		statusValue := def.StatusChangeInitialValue
-		if f, ok := s.catalog.FuncResolver.Resolve(def.StatusNumericalFunctionId); ok {
+		if f, ok := catalog.FuncResolver.Resolve(def.StatusNumericalFunctionId); ok {
 			statusValue = f.Evaluate(part.Level)
 		}
 

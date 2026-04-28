@@ -414,24 +414,12 @@ func (s *OctoHTTPServer) serveListBin(w http.ResponseWriter, filePath string) {
 	w.Write(data)
 }
 
-// serveDatabaseBinE serves MasterMemory database: /assets/release/{version}/database.bin.e
-// -> assets/release/{version}.bin.e (or assets/release/database.bin.e fallback).
-func (s *OctoHTTPServer) serveDatabaseBinE(w http.ResponseWriter, r *http.Request, path string) {
-	parts := strings.Split(path, "/")
-	var version string
-	for i, p := range parts {
-		if p == "release" && i+1 < len(parts) {
-			version = parts[i+1]
-			break
-		}
-	}
-	filePath := filepath.Join(s.BaseDir, "assets", "release", "database.bin.e")
-	if version != "" {
-		vPath := filepath.Join(s.BaseDir, "assets", "release", version+".bin.e")
-		if _, err := os.Stat(vPath); err == nil {
-			filePath = vPath
-		}
-	}
+// serveDatabaseBinE serves the master data binary. The URL's {version} segment
+// is a cache key (it changes whenever the file's mtime changes, see
+// DataService.GetLatestMasterDataVersion) but does not select a different file —
+// there's only ever one bin.e on disk.
+func (s *OctoHTTPServer) serveDatabaseBinE(w http.ResponseWriter, r *http.Request, _ string) {
+	filePath := filepath.Join(s.BaseDir, "assets", "release", "20240404193219.bin.e")
 	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeFile(w, r, filePath)
 }

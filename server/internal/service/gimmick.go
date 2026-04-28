@@ -6,7 +6,7 @@ import (
 
 	pb "lunar-tear/server/gen/proto"
 	"lunar-tear/server/internal/gametime"
-	"lunar-tear/server/internal/masterdata"
+	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
@@ -14,13 +14,13 @@ import (
 
 type GimmickServiceServer struct {
 	pb.UnimplementedGimmickServiceServer
-	users          store.UserRepository
-	sessions       store.SessionRepository
-	gimmickCatalog *masterdata.GimmickCatalog
+	users    store.UserRepository
+	sessions store.SessionRepository
+	holder   *runtime.Holder
 }
 
-func NewGimmickServiceServer(users store.UserRepository, sessions store.SessionRepository, gimmickCatalog *masterdata.GimmickCatalog) *GimmickServiceServer {
-	return &GimmickServiceServer{users: users, sessions: sessions, gimmickCatalog: gimmickCatalog}
+func NewGimmickServiceServer(users store.UserRepository, sessions store.SessionRepository, holder *runtime.Holder) *GimmickServiceServer {
+	return &GimmickServiceServer{users: users, sessions: sessions, holder: holder}
 }
 
 func (s *GimmickServiceServer) UpdateSequence(ctx context.Context, req *pb.UpdateSequenceRequest) (*pb.UpdateSequenceResponse, error) {
@@ -80,7 +80,7 @@ func (s *GimmickServiceServer) InitSequenceSchedule(ctx context.Context, _ *empt
 	now := gametime.NowMillis()
 	s.users.UpdateUser(userId, func(user *store.UserState) {
 		added := 0
-		for _, key := range s.gimmickCatalog.ActiveScheduleKeys(*user, now) {
+		for _, key := range s.holder.Get().Gimmick.ActiveScheduleKeys(*user, now) {
 			if _, exists := user.Gimmick.Sequences[key]; !exists {
 				user.Gimmick.Sequences[key] = store.GimmickSequenceState{Key: key}
 				added++

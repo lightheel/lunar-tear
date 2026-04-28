@@ -10,6 +10,7 @@ import (
 	"lunar-tear/server/internal/gameutil"
 	"lunar-tear/server/internal/masterdata"
 	"lunar-tear/server/internal/model"
+	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 )
 
@@ -17,12 +18,11 @@ type WeaponServiceServer struct {
 	pb.UnimplementedWeaponServiceServer
 	users    store.UserRepository
 	sessions store.SessionRepository
-	catalog  *masterdata.WeaponCatalog
-	config   *masterdata.GameConfig
+	holder   *runtime.Holder
 }
 
-func NewWeaponServiceServer(users store.UserRepository, sessions store.SessionRepository, catalog *masterdata.WeaponCatalog, config *masterdata.GameConfig) *WeaponServiceServer {
-	return &WeaponServiceServer{users: users, sessions: sessions, catalog: catalog, config: config}
+func NewWeaponServiceServer(users store.UserRepository, sessions store.SessionRepository, holder *runtime.Holder) *WeaponServiceServer {
+	return &WeaponServiceServer{users: users, sessions: sessions, holder: holder}
 }
 
 func (s *WeaponServiceServer) Protect(ctx context.Context, req *pb.ProtectRequest) (*pb.ProtectResponse, error) {
@@ -72,6 +72,9 @@ func (s *WeaponServiceServer) Unprotect(ctx context.Context, req *pb.UnprotectRe
 func (s *WeaponServiceServer) EnhanceByMaterial(ctx context.Context, req *pb.EnhanceByMaterialRequest) (*pb.EnhanceByMaterialResponse, error) {
 	log.Printf("[WeaponService] EnhanceByMaterial: uuid=%s materials=%v", req.UserWeaponUuid, req.Materials)
 
+	cat := s.holder.Get()
+	catalog := cat.Weapon
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -82,7 +85,7 @@ func (s *WeaponServiceServer) EnhanceByMaterial(ctx context.Context, req *pb.Enh
 			return
 		}
 
-		wm, ok := s.catalog.Weapons[weapon.WeaponId]
+		wm, ok := catalog.Weapons[weapon.WeaponId]
 		if !ok {
 			log.Printf("[WeaponService] EnhanceByMaterial: weapon master id=%d not found", weapon.WeaponId)
 			return
@@ -91,7 +94,7 @@ func (s *WeaponServiceServer) EnhanceByMaterial(ctx context.Context, req *pb.Enh
 		totalExp := int32(0)
 		totalMaterialCount := int32(0)
 		for materialId, count := range req.Materials {
-			mat, ok := s.catalog.Materials[materialId]
+			mat, ok := catalog.Materials[materialId]
 			if !ok {
 				log.Printf("[WeaponService] EnhanceByMaterial: material id=%d not found, skipping", materialId)
 				continue
@@ -107,19 +110,19 @@ func (s *WeaponServiceServer) EnhanceByMaterial(ctx context.Context, req *pb.Enh
 
 			expPerUnit := mat.EffectValue
 			if mat.WeaponType != 0 && mat.WeaponType == wm.WeaponType {
-				expPerUnit = expPerUnit * s.config.MaterialSameWeaponExpCoefficientPermil / 1000
+				expPerUnit = expPerUnit * config.MaterialSameWeaponExpCoefficientPermil / 1000
 			}
 			totalExp += expPerUnit * count
 		}
 
-		if costFunc, ok := s.catalog.GoldCostByEnhanceId[wm.WeaponSpecificEnhanceId]; ok && totalMaterialCount > 0 {
+		if costFunc, ok := catalog.GoldCostByEnhanceId[wm.WeaponSpecificEnhanceId]; ok && totalMaterialCount > 0 {
 			goldCost := costFunc.Evaluate(totalMaterialCount)
-			user.ConsumableItems[s.config.ConsumableItemIdForGold] -= goldCost
+			user.ConsumableItems[config.ConsumableItemIdForGold] -= goldCost
 			log.Printf("[WeaponService] EnhanceByMaterial: gold cost=%d (materials=%d)", goldCost, totalMaterialCount)
 		}
 
 		weapon.Exp += totalExp
-		if thresholds, ok := s.catalog.ExpByEnhanceId[wm.WeaponSpecificEnhanceId]; ok {
+		if thresholds, ok := catalog.ExpByEnhanceId[wm.WeaponSpecificEnhanceId]; ok {
 			weapon.Level, weapon.Exp = gameutil.LevelAndCap(weapon.Exp, thresholds)
 		}
 
@@ -127,7 +130,7 @@ func (s *WeaponServiceServer) EnhanceByMaterial(ctx context.Context, req *pb.Enh
 		user.Weapons[req.UserWeaponUuid] = weapon
 		log.Printf("[WeaponService] EnhanceByMaterial: weaponId=%d +%d exp -> total=%d level=%d", weapon.WeaponId, totalExp, weapon.Exp, weapon.Level)
 
-		s.checkWeaponStoryUnlocks(user, weapon.WeaponId, weapon.Level, nowMillis)
+		checkWeaponStoryUnlocks(catalog, user, weapon.WeaponId, weapon.Level, nowMillis)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("weapon enhance by material: %w", err)
@@ -142,6 +145,9 @@ func (s *WeaponServiceServer) EnhanceByMaterial(ctx context.Context, req *pb.Enh
 func (s *WeaponServiceServer) Sell(ctx context.Context, req *pb.SellRequest) (*pb.SellResponse, error) {
 	log.Printf("[WeaponService] Sell: uuids=%v", req.UserWeaponUuid)
 
+	cat := s.holder.Get()
+	catalog := cat.Weapon
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 
 	_, err := s.users.UpdateUser(userId, func(user *store.UserState) {
@@ -153,17 +159,17 @@ func (s *WeaponServiceServer) Sell(ctx context.Context, req *pb.SellRequest) (*p
 				continue
 			}
 
-			wm, ok := s.catalog.Weapons[weapon.WeaponId]
+			wm, ok := catalog.Weapons[weapon.WeaponId]
 			if !ok {
 				log.Printf("[WeaponService] Sell: weapon master id=%d not found, skipping", weapon.WeaponId)
 				continue
 			}
 
-			if sellFunc, ok := s.catalog.SellPriceByEnhanceId[wm.WeaponSpecificEnhanceId]; ok {
+			if sellFunc, ok := catalog.SellPriceByEnhanceId[wm.WeaponSpecificEnhanceId]; ok {
 				totalGold += sellFunc.Evaluate(weapon.Level)
 			}
 
-			if medals, ok := s.catalog.MedalsByWeaponId[weapon.WeaponId]; ok {
+			if medals, ok := catalog.MedalsByWeaponId[weapon.WeaponId]; ok {
 				for itemId, count := range medals {
 					user.ConsumableItems[itemId] += count
 				}
@@ -176,7 +182,7 @@ func (s *WeaponServiceServer) Sell(ctx context.Context, req *pb.SellRequest) (*p
 		}
 
 		if totalGold > 0 {
-			user.ConsumableItems[s.config.ConsumableItemIdForGold] += totalGold
+			user.ConsumableItems[config.ConsumableItemIdForGold] += totalGold
 			log.Printf("[WeaponService] Sell: granted %d gold", totalGold)
 		}
 	})
@@ -190,6 +196,9 @@ func (s *WeaponServiceServer) Sell(ctx context.Context, req *pb.SellRequest) (*p
 func (s *WeaponServiceServer) Evolve(ctx context.Context, req *pb.EvolveRequest) (*pb.EvolveResponse, error) {
 	log.Printf("[WeaponService] Evolve: uuid=%s", req.UserWeaponUuid)
 
+	cat := s.holder.Get()
+	catalog := cat.Weapon
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -200,20 +209,20 @@ func (s *WeaponServiceServer) Evolve(ctx context.Context, req *pb.EvolveRequest)
 			return
 		}
 
-		wm, ok := s.catalog.Weapons[weapon.WeaponId]
+		wm, ok := catalog.Weapons[weapon.WeaponId]
 		if !ok {
 			log.Printf("[WeaponService] Evolve: weapon master id=%d not found", weapon.WeaponId)
 			return
 		}
 
-		evolvedId, ok := s.catalog.EvolutionNextWeaponId[weapon.WeaponId]
+		evolvedId, ok := catalog.EvolutionNextWeaponId[weapon.WeaponId]
 		if !ok {
 			log.Printf("[WeaponService] Evolve: no evolution for weaponId=%d", weapon.WeaponId)
 			return
 		}
 
 		totalMaterialCount := int32(0)
-		mats := s.catalog.EvolutionMaterials[wm.WeaponEvolutionMaterialGroupId]
+		mats := catalog.EvolutionMaterials[wm.WeaponEvolutionMaterialGroupId]
 		for _, mat := range mats {
 			cur := user.Materials[mat.MaterialId]
 			cost := mat.Count
@@ -225,9 +234,9 @@ func (s *WeaponServiceServer) Evolve(ctx context.Context, req *pb.EvolveRequest)
 			totalMaterialCount += cost
 		}
 
-		if costFunc, ok := s.catalog.EvolutionCostByEnhanceId[wm.WeaponSpecificEnhanceId]; ok && totalMaterialCount > 0 {
+		if costFunc, ok := catalog.EvolutionCostByEnhanceId[wm.WeaponSpecificEnhanceId]; ok && totalMaterialCount > 0 {
 			goldCost := costFunc.Evaluate(totalMaterialCount)
-			user.ConsumableItems[s.config.ConsumableItemIdForGold] -= goldCost
+			user.ConsumableItems[config.ConsumableItemIdForGold] -= goldCost
 			log.Printf("[WeaponService] Evolve: gold cost=%d", goldCost)
 		}
 
@@ -235,9 +244,9 @@ func (s *WeaponServiceServer) Evolve(ctx context.Context, req *pb.EvolveRequest)
 		weapon.LatestVersion = nowMillis
 		user.Weapons[req.UserWeaponUuid] = weapon
 
-		evolvedMaster, ok := s.catalog.Weapons[evolvedId]
+		evolvedMaster, ok := catalog.Weapons[evolvedId]
 		if ok {
-			if slots, ok := s.catalog.AbilitySlots[evolvedMaster.WeaponAbilityGroupId]; ok {
+			if slots, ok := catalog.AbilitySlots[evolvedMaster.WeaponAbilityGroupId]; ok {
 				abilities := make([]store.WeaponAbilityState, len(slots))
 				for i, slot := range slots {
 					abilities[i] = store.WeaponAbilityState{
@@ -252,7 +261,7 @@ func (s *WeaponServiceServer) Evolve(ctx context.Context, req *pb.EvolveRequest)
 
 		log.Printf("[WeaponService] Evolve: weaponId %d -> %d", wm.WeaponId, evolvedId)
 
-		s.checkWeaponStoryUnlocks(user, evolvedId, weapon.Level, nowMillis)
+		checkWeaponStoryUnlocks(catalog, user, evolvedId, weapon.Level, nowMillis)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("weapon evolve: %w", err)
@@ -264,6 +273,9 @@ func (s *WeaponServiceServer) Evolve(ctx context.Context, req *pb.EvolveRequest)
 func (s *WeaponServiceServer) EnhanceSkill(ctx context.Context, req *pb.EnhanceSkillRequest) (*pb.EnhanceSkillResponse, error) {
 	log.Printf("[WeaponService] EnhanceSkill: uuid=%s skillId=%d addLevel=%d", req.UserWeaponUuid, req.SkillId, req.AddLevelCount)
 
+	cat := s.holder.Get()
+	catalog := cat.Weapon
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -274,13 +286,13 @@ func (s *WeaponServiceServer) EnhanceSkill(ctx context.Context, req *pb.EnhanceS
 			return
 		}
 
-		wm, ok := s.catalog.Weapons[weapon.WeaponId]
+		wm, ok := catalog.Weapons[weapon.WeaponId]
 		if !ok {
 			log.Printf("[WeaponService] EnhanceSkill: weapon master id=%d not found", weapon.WeaponId)
 			return
 		}
 
-		groupRows := s.catalog.SkillGroupsByGroupId[wm.WeaponSkillGroupId]
+		groupRows := catalog.SkillGroupsByGroupId[wm.WeaponSkillGroupId]
 		var skillGroup *masterdata.EntityMWeaponSkillGroup
 		for i := range groupRows {
 			if groupRows[i].SkillId == req.SkillId {
@@ -306,7 +318,7 @@ func (s *WeaponServiceServer) EnhanceSkill(ctx context.Context, req *pb.EnhanceS
 			return
 		}
 
-		maxLevelFunc, ok := s.catalog.SkillMaxLevelByEnhanceId[wm.WeaponSpecificEnhanceId]
+		maxLevelFunc, ok := catalog.SkillMaxLevelByEnhanceId[wm.WeaponSpecificEnhanceId]
 		if !ok {
 			log.Printf("[WeaponService] EnhanceSkill: no max skill level func for enhanceId=%d", wm.WeaponSpecificEnhanceId)
 			return
@@ -326,7 +338,7 @@ func (s *WeaponServiceServer) EnhanceSkill(ctx context.Context, req *pb.EnhanceS
 		enhanceMatId := skillGroup.WeaponSkillEnhancementMaterialId
 		for lvl := currentLevel; lvl < currentLevel+addCount; lvl++ {
 			key := [2]int32{enhanceMatId, lvl}
-			mats := s.catalog.SkillEnhanceMats[key]
+			mats := catalog.SkillEnhanceMats[key]
 			for _, mat := range mats {
 				cur := user.Materials[mat.MaterialId]
 				cost := mat.Count
@@ -337,9 +349,9 @@ func (s *WeaponServiceServer) EnhanceSkill(ctx context.Context, req *pb.EnhanceS
 				user.Materials[mat.MaterialId] = cur - cost
 			}
 
-			if costFunc, ok := s.catalog.SkillCostByEnhanceId[wm.WeaponSpecificEnhanceId]; ok {
+			if costFunc, ok := catalog.SkillCostByEnhanceId[wm.WeaponSpecificEnhanceId]; ok {
 				goldCost := costFunc.Evaluate(lvl + 1)
-				user.ConsumableItems[s.config.ConsumableItemIdForGold] -= goldCost
+				user.ConsumableItems[config.ConsumableItemIdForGold] -= goldCost
 			}
 		}
 
@@ -360,6 +372,9 @@ func (s *WeaponServiceServer) EnhanceSkill(ctx context.Context, req *pb.EnhanceS
 func (s *WeaponServiceServer) EnhanceAbility(ctx context.Context, req *pb.EnhanceAbilityRequest) (*pb.EnhanceAbilityResponse, error) {
 	log.Printf("[WeaponService] EnhanceAbility: uuid=%s abilityId=%d addLevel=%d", req.UserWeaponUuid, req.AbilityId, req.AddLevelCount)
 
+	cat := s.holder.Get()
+	catalog := cat.Weapon
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -370,13 +385,13 @@ func (s *WeaponServiceServer) EnhanceAbility(ctx context.Context, req *pb.Enhanc
 			return
 		}
 
-		wm, ok := s.catalog.Weapons[weapon.WeaponId]
+		wm, ok := catalog.Weapons[weapon.WeaponId]
 		if !ok {
 			log.Printf("[WeaponService] EnhanceAbility: weapon master id=%d not found", weapon.WeaponId)
 			return
 		}
 
-		groupRows := s.catalog.AbilityGroupsByGroupId[wm.WeaponAbilityGroupId]
+		groupRows := catalog.AbilityGroupsByGroupId[wm.WeaponAbilityGroupId]
 		var abilityGroup *masterdata.EntityMWeaponAbilityGroup
 		for i := range groupRows {
 			if groupRows[i].AbilityId == req.AbilityId {
@@ -402,7 +417,7 @@ func (s *WeaponServiceServer) EnhanceAbility(ctx context.Context, req *pb.Enhanc
 			return
 		}
 
-		maxLevelFunc, ok := s.catalog.AbilityMaxLevelByEnhanceId[wm.WeaponSpecificEnhanceId]
+		maxLevelFunc, ok := catalog.AbilityMaxLevelByEnhanceId[wm.WeaponSpecificEnhanceId]
 		if !ok {
 			log.Printf("[WeaponService] EnhanceAbility: no max ability level func for enhanceId=%d", wm.WeaponSpecificEnhanceId)
 			return
@@ -422,7 +437,7 @@ func (s *WeaponServiceServer) EnhanceAbility(ctx context.Context, req *pb.Enhanc
 		enhanceMatId := abilityGroup.WeaponAbilityEnhancementMaterialId
 		for lvl := currentLevel; lvl < currentLevel+addCount; lvl++ {
 			key := [2]int32{enhanceMatId, lvl}
-			mats := s.catalog.AbilityEnhanceMats[key]
+			mats := catalog.AbilityEnhanceMats[key]
 			for _, mat := range mats {
 				cur := user.Materials[mat.MaterialId]
 				cost := mat.Count
@@ -433,9 +448,9 @@ func (s *WeaponServiceServer) EnhanceAbility(ctx context.Context, req *pb.Enhanc
 				user.Materials[mat.MaterialId] = cur - cost
 			}
 
-			if costFunc, ok := s.catalog.AbilityCostByEnhanceId[wm.WeaponSpecificEnhanceId]; ok {
+			if costFunc, ok := catalog.AbilityCostByEnhanceId[wm.WeaponSpecificEnhanceId]; ok {
 				goldCost := costFunc.Evaluate(lvl + 1)
-				user.ConsumableItems[s.config.ConsumableItemIdForGold] -= goldCost
+				user.ConsumableItems[config.ConsumableItemIdForGold] -= goldCost
 			}
 		}
 
@@ -456,6 +471,9 @@ func (s *WeaponServiceServer) EnhanceAbility(ctx context.Context, req *pb.Enhanc
 func (s *WeaponServiceServer) LimitBreakByMaterial(ctx context.Context, req *pb.LimitBreakByMaterialRequest) (*pb.LimitBreakByMaterialResponse, error) {
 	log.Printf("[WeaponService] LimitBreakByMaterial: uuid=%s materials=%v", req.UserWeaponUuid, req.Materials)
 
+	cat := s.holder.Get()
+	catalog := cat.Weapon
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -466,18 +484,18 @@ func (s *WeaponServiceServer) LimitBreakByMaterial(ctx context.Context, req *pb.
 			return
 		}
 
-		if weapon.LimitBreakCount >= s.config.WeaponLimitBreakAvailableCount {
+		if weapon.LimitBreakCount >= config.WeaponLimitBreakAvailableCount {
 			log.Printf("[WeaponService] LimitBreakByMaterial: already at max limit break %d", weapon.LimitBreakCount)
 			return
 		}
 
-		wm, ok := s.catalog.Weapons[weapon.WeaponId]
+		wm, ok := catalog.Weapons[weapon.WeaponId]
 		if !ok {
 			log.Printf("[WeaponService] LimitBreakByMaterial: weapon master id=%d not found", weapon.WeaponId)
 			return
 		}
 
-		remaining := s.config.WeaponLimitBreakAvailableCount - weapon.LimitBreakCount
+		remaining := config.WeaponLimitBreakAvailableCount - weapon.LimitBreakCount
 
 		totalMaterialCount := int32(0)
 		for materialId, count := range req.Materials {
@@ -496,9 +514,9 @@ func (s *WeaponServiceServer) LimitBreakByMaterial(ctx context.Context, req *pb.
 			totalMaterialCount += count
 		}
 
-		if costFunc, ok := s.catalog.LimitBreakCostByMaterialByEnhanceId[wm.WeaponSpecificEnhanceId]; ok && totalMaterialCount > 0 {
+		if costFunc, ok := catalog.LimitBreakCostByMaterialByEnhanceId[wm.WeaponSpecificEnhanceId]; ok && totalMaterialCount > 0 {
 			goldCost := costFunc.Evaluate(totalMaterialCount)
-			user.ConsumableItems[s.config.ConsumableItemIdForGold] -= goldCost
+			user.ConsumableItems[config.ConsumableItemIdForGold] -= goldCost
 			log.Printf("[WeaponService] LimitBreakByMaterial: gold cost=%d", goldCost)
 		}
 
@@ -525,6 +543,9 @@ func (s *WeaponServiceServer) LimitBreakByMaterial(ctx context.Context, req *pb.
 func (s *WeaponServiceServer) LimitBreakByWeapon(ctx context.Context, req *pb.LimitBreakByWeaponRequest) (*pb.LimitBreakByWeaponResponse, error) {
 	log.Printf("[WeaponService] LimitBreakByWeapon: uuid=%s materialUuids=%v", req.UserWeaponUuid, req.MaterialUserWeaponUuids)
 
+	cat := s.holder.Get()
+	catalog := cat.Weapon
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -535,18 +556,18 @@ func (s *WeaponServiceServer) LimitBreakByWeapon(ctx context.Context, req *pb.Li
 			return
 		}
 
-		if weapon.LimitBreakCount >= s.config.WeaponLimitBreakAvailableCount {
+		if weapon.LimitBreakCount >= config.WeaponLimitBreakAvailableCount {
 			log.Printf("[WeaponService] LimitBreakByWeapon: already at max limit break %d", weapon.LimitBreakCount)
 			return
 		}
 
-		wm, ok := s.catalog.Weapons[weapon.WeaponId]
+		wm, ok := catalog.Weapons[weapon.WeaponId]
 		if !ok {
 			log.Printf("[WeaponService] LimitBreakByWeapon: weapon master id=%d not found", weapon.WeaponId)
 			return
 		}
 
-		remaining := s.config.WeaponLimitBreakAvailableCount - weapon.LimitBreakCount
+		remaining := config.WeaponLimitBreakAvailableCount - weapon.LimitBreakCount
 
 		consumedCount := int32(0)
 		for _, uuid := range req.MaterialUserWeaponUuids {
@@ -560,7 +581,7 @@ func (s *WeaponServiceServer) LimitBreakByWeapon(ctx context.Context, req *pb.Li
 				continue
 			}
 
-			if medals, ok := s.catalog.MedalsByWeaponId[matWeapon.WeaponId]; ok {
+			if medals, ok := catalog.MedalsByWeaponId[matWeapon.WeaponId]; ok {
 				for itemId, count := range medals {
 					user.ConsumableItems[itemId] += count
 				}
@@ -573,9 +594,9 @@ func (s *WeaponServiceServer) LimitBreakByWeapon(ctx context.Context, req *pb.Li
 			consumedCount++
 		}
 
-		if costFunc, ok := s.catalog.LimitBreakCostByWeaponByEnhanceId[wm.WeaponSpecificEnhanceId]; ok && consumedCount > 0 {
+		if costFunc, ok := catalog.LimitBreakCostByWeaponByEnhanceId[wm.WeaponSpecificEnhanceId]; ok && consumedCount > 0 {
 			goldCost := costFunc.Evaluate(consumedCount)
-			user.ConsumableItems[s.config.ConsumableItemIdForGold] -= goldCost
+			user.ConsumableItems[config.ConsumableItemIdForGold] -= goldCost
 			log.Printf("[WeaponService] LimitBreakByWeapon: gold cost=%d", goldCost)
 		}
 
@@ -602,6 +623,9 @@ func (s *WeaponServiceServer) LimitBreakByWeapon(ctx context.Context, req *pb.Li
 func (s *WeaponServiceServer) EnhanceByWeapon(ctx context.Context, req *pb.EnhanceByWeaponRequest) (*pb.EnhanceByWeaponResponse, error) {
 	log.Printf("[WeaponService] EnhanceByWeapon: uuid=%s materialUuids=%v", req.UserWeaponUuid, req.MaterialUserWeaponUuids)
 
+	cat := s.holder.Get()
+	catalog := cat.Weapon
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -612,7 +636,7 @@ func (s *WeaponServiceServer) EnhanceByWeapon(ctx context.Context, req *pb.Enhan
 			return
 		}
 
-		wm, ok := s.catalog.Weapons[weapon.WeaponId]
+		wm, ok := catalog.Weapons[weapon.WeaponId]
 		if !ok {
 			log.Printf("[WeaponService] EnhanceByWeapon: weapon master id=%d not found", weapon.WeaponId)
 			return
@@ -627,19 +651,19 @@ func (s *WeaponServiceServer) EnhanceByWeapon(ctx context.Context, req *pb.Enhan
 				continue
 			}
 
-			matMaster, ok := s.catalog.Weapons[matWeapon.WeaponId]
+			matMaster, ok := catalog.Weapons[matWeapon.WeaponId]
 			if !ok {
 				log.Printf("[WeaponService] EnhanceByWeapon: material weapon master id=%d not found, skipping", matWeapon.WeaponId)
 				continue
 			}
 
-			baseExp := s.catalog.BaseExpByEnhanceId[matMaster.WeaponSpecificEnhanceId]
+			baseExp := catalog.BaseExpByEnhanceId[matMaster.WeaponSpecificEnhanceId]
 			if matMaster.WeaponType != 0 && matMaster.WeaponType == wm.WeaponType {
-				baseExp = baseExp * s.config.MaterialSameWeaponExpCoefficientPermil / 1000
+				baseExp = baseExp * config.MaterialSameWeaponExpCoefficientPermil / 1000
 			}
 			totalExp += baseExp
 
-			if medals, ok := s.catalog.MedalsByWeaponId[matWeapon.WeaponId]; ok {
+			if medals, ok := catalog.MedalsByWeaponId[matWeapon.WeaponId]; ok {
 				for itemId, count := range medals {
 					user.ConsumableItems[itemId] += count
 				}
@@ -652,14 +676,14 @@ func (s *WeaponServiceServer) EnhanceByWeapon(ctx context.Context, req *pb.Enhan
 			consumedCount++
 		}
 
-		if costFunc, ok := s.catalog.EnhanceCostByWeaponByEnhanceId[wm.WeaponSpecificEnhanceId]; ok && consumedCount > 0 {
+		if costFunc, ok := catalog.EnhanceCostByWeaponByEnhanceId[wm.WeaponSpecificEnhanceId]; ok && consumedCount > 0 {
 			goldCost := costFunc.Evaluate(consumedCount)
-			user.ConsumableItems[s.config.ConsumableItemIdForGold] -= goldCost
+			user.ConsumableItems[config.ConsumableItemIdForGold] -= goldCost
 			log.Printf("[WeaponService] EnhanceByWeapon: gold cost=%d (weapons=%d)", goldCost, consumedCount)
 		}
 
 		weapon.Exp += totalExp
-		if thresholds, ok := s.catalog.ExpByEnhanceId[wm.WeaponSpecificEnhanceId]; ok {
+		if thresholds, ok := catalog.ExpByEnhanceId[wm.WeaponSpecificEnhanceId]; ok {
 			weapon.Level, weapon.Exp = gameutil.LevelAndCap(weapon.Exp, thresholds)
 		}
 
@@ -667,7 +691,7 @@ func (s *WeaponServiceServer) EnhanceByWeapon(ctx context.Context, req *pb.Enhan
 		user.Weapons[req.UserWeaponUuid] = weapon
 		log.Printf("[WeaponService] EnhanceByWeapon: weaponId=%d +%d exp -> total=%d level=%d", weapon.WeaponId, totalExp, weapon.Exp, weapon.Level)
 
-		s.checkWeaponStoryUnlocks(user, weapon.WeaponId, weapon.Level, nowMillis)
+		checkWeaponStoryUnlocks(catalog, user, weapon.WeaponId, weapon.Level, nowMillis)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("weapon enhance by weapon: %w", err)
@@ -679,13 +703,13 @@ func (s *WeaponServiceServer) EnhanceByWeapon(ctx context.Context, req *pb.Enhan
 	}, nil
 }
 
-func (s *WeaponServiceServer) checkWeaponStoryUnlocks(user *store.UserState, weaponId, level int32, nowMillis int64) {
-	wm, ok := s.catalog.Weapons[weaponId]
+func checkWeaponStoryUnlocks(catalog *masterdata.WeaponCatalog, user *store.UserState, weaponId, level int32, nowMillis int64) {
+	wm, ok := catalog.Weapons[weaponId]
 	if !ok || wm.WeaponStoryReleaseConditionGroupId == 0 {
 		return
 	}
-	evoOrder, hasEvo := s.catalog.EvolutionOrder[weaponId]
-	conditions := s.catalog.ReleaseConditionsByGroupId[wm.WeaponStoryReleaseConditionGroupId]
+	evoOrder, hasEvo := catalog.EvolutionOrder[weaponId]
+	conditions := catalog.ReleaseConditionsByGroupId[wm.WeaponStoryReleaseConditionGroupId]
 
 	for _, cond := range conditions {
 		switch model.WeaponStoryReleaseConditionType(cond.WeaponStoryReleaseConditionType) {
@@ -696,14 +720,14 @@ func (s *WeaponServiceServer) checkWeaponStoryUnlocks(user *store.UserState, wea
 				store.GrantWeaponStoryUnlock(user, weaponId, cond.StoryIndex, nowMillis)
 			}
 		case model.WeaponStoryReleaseConditionTypeReachInitialMaxLevel:
-			if maxFunc, ok := s.catalog.MaxLevelByEnhanceId[wm.WeaponSpecificEnhanceId]; ok {
+			if maxFunc, ok := catalog.MaxLevelByEnhanceId[wm.WeaponSpecificEnhanceId]; ok {
 				if level >= maxFunc.Evaluate(0) {
 					store.GrantWeaponStoryUnlock(user, weaponId, cond.StoryIndex, nowMillis)
 				}
 			}
 		case model.WeaponStoryReleaseConditionTypeReachOnceEvolvedMaxLevel:
 			if hasEvo && evoOrder >= 1 {
-				if maxFunc, ok := s.catalog.MaxLevelByEnhanceId[wm.WeaponSpecificEnhanceId]; ok {
+				if maxFunc, ok := catalog.MaxLevelByEnhanceId[wm.WeaponSpecificEnhanceId]; ok {
 					if level >= maxFunc.Evaluate(0) {
 						store.GrantWeaponStoryUnlock(user, weaponId, cond.StoryIndex, nowMillis)
 					}
@@ -720,6 +744,9 @@ func (s *WeaponServiceServer) checkWeaponStoryUnlocks(user *store.UserState, wea
 func (s *WeaponServiceServer) Awaken(ctx context.Context, req *pb.WeaponAwakenRequest) (*pb.WeaponAwakenResponse, error) {
 	log.Printf("[WeaponService] Awaken: uuid=%s", req.UserWeaponUuid)
 
+	cat := s.holder.Get()
+	catalog := cat.Weapon
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
@@ -730,7 +757,7 @@ func (s *WeaponServiceServer) Awaken(ctx context.Context, req *pb.WeaponAwakenRe
 			return
 		}
 
-		awakenRow, ok := s.catalog.AwakenByWeaponId[weapon.WeaponId]
+		awakenRow, ok := catalog.AwakenByWeaponId[weapon.WeaponId]
 		if !ok {
 			log.Printf("[WeaponService] Awaken: no awaken data for weaponId=%d", weapon.WeaponId)
 			return
@@ -741,7 +768,7 @@ func (s *WeaponServiceServer) Awaken(ctx context.Context, req *pb.WeaponAwakenRe
 			return
 		}
 
-		mats := s.catalog.AwakenMaterialsByGroupId[awakenRow.WeaponAwakenMaterialGroupId]
+		mats := catalog.AwakenMaterialsByGroupId[awakenRow.WeaponAwakenMaterialGroupId]
 		for _, mat := range mats {
 			cur := user.Materials[mat.MaterialId]
 			cost := mat.Count
@@ -753,7 +780,7 @@ func (s *WeaponServiceServer) Awaken(ctx context.Context, req *pb.WeaponAwakenRe
 		}
 
 		if awakenRow.ConsumeGold > 0 {
-			user.ConsumableItems[s.config.ConsumableItemIdForGold] -= awakenRow.ConsumeGold
+			user.ConsumableItems[config.ConsumableItemIdForGold] -= awakenRow.ConsumeGold
 			log.Printf("[WeaponService] Awaken: gold cost=%d", awakenRow.ConsumeGold)
 		}
 

@@ -7,6 +7,7 @@ import (
 	pb "lunar-tear/server/gen/proto"
 	"lunar-tear/server/internal/gametime"
 	"lunar-tear/server/internal/masterdata"
+	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 )
 
@@ -14,21 +15,23 @@ type CharacterServiceServer struct {
 	pb.UnimplementedCharacterServiceServer
 	users    store.UserRepository
 	sessions store.SessionRepository
-	catalog  *masterdata.CharacterRebirthCatalog
-	config   *masterdata.GameConfig
+	holder   *runtime.Holder
 }
 
-func NewCharacterServiceServer(users store.UserRepository, sessions store.SessionRepository, catalog *masterdata.CharacterRebirthCatalog, config *masterdata.GameConfig) *CharacterServiceServer {
-	return &CharacterServiceServer{users: users, sessions: sessions, catalog: catalog, config: config}
+func NewCharacterServiceServer(users store.UserRepository, sessions store.SessionRepository, holder *runtime.Holder) *CharacterServiceServer {
+	return &CharacterServiceServer{users: users, sessions: sessions, holder: holder}
 }
 
 func (s *CharacterServiceServer) Rebirth(ctx context.Context, req *pb.RebirthRequest) (*pb.RebirthResponse, error) {
 	log.Printf("[CharacterService] Rebirth: characterId=%d rebirthCount=%d", req.CharacterId, req.RebirthCount)
 
+	cat := s.holder.Get()
+	catalog := cat.CharacterRebirth
+	config := cat.GameConfig
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	nowMillis := gametime.NowMillis()
 
-	stepGroupId, ok := s.catalog.StepGroupByCharacterId[req.CharacterId]
+	stepGroupId, ok := catalog.StepGroupByCharacterId[req.CharacterId]
 	if !ok {
 		log.Printf("[CharacterService] Rebirth: no step group for characterId=%d", req.CharacterId)
 		return &pb.RebirthResponse{}, nil
@@ -40,17 +43,17 @@ func (s *CharacterServiceServer) Rebirth(ctx context.Context, req *pb.RebirthReq
 		targetCount := currentCount + req.RebirthCount
 
 		for count := currentCount; count < targetCount; count++ {
-			step, ok := s.catalog.StepByGroupAndCount[masterdata.StepKey{GroupId: stepGroupId, BeforeRebirthCount: count}]
+			step, ok := catalog.StepByGroupAndCount[masterdata.StepKey{GroupId: stepGroupId, BeforeRebirthCount: count}]
 			if !ok {
 				log.Printf("[CharacterService] Rebirth: no step row for groupId=%d beforeCount=%d", stepGroupId, count)
 				return
 			}
 
-			goldId := s.config.ConsumableItemIdForGold
-			user.ConsumableItems[goldId] = max(user.ConsumableItems[goldId]-s.config.CharacterRebirthConsumeGold, 0)
-			log.Printf("[CharacterService] Rebirth: consumed gold=%d", s.config.CharacterRebirthConsumeGold)
+			goldId := config.ConsumableItemIdForGold
+			user.ConsumableItems[goldId] = max(user.ConsumableItems[goldId]-config.CharacterRebirthConsumeGold, 0)
+			log.Printf("[CharacterService] Rebirth: consumed gold=%d", config.CharacterRebirthConsumeGold)
 
-			materials := s.catalog.MaterialsByGroupId[step.CharacterRebirthMaterialGroupId]
+			materials := catalog.MaterialsByGroupId[step.CharacterRebirthMaterialGroupId]
 			for _, mat := range materials {
 				user.Materials[mat.MaterialId] -= mat.Count
 				if user.Materials[mat.MaterialId] <= 0 {

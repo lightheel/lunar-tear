@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-05-02
+
+### Working
+
+- Cross-platform asset/CDN pipeline (iOS and Android)
+- Master data hot-reload: loopback admin webhook (`/api/admin/master-data/reload`) with `LUNAR_ADMIN_TOKEN`; runtime build registry; wizard, dev runner, and Docker wiring
+- Scripts repo: Octo **`list.bin` patcher** (`assetbundles/patch_listbin.py`) — refresh catalog `size` / `md5` / `crc` after swapping bundles or resources
+- Scripts repo: **asset bundle encrypt/decrypt** for Octo-masked UnityFS (`assetbundles/encrypt_assetbundle.py`, `decrypt_assetbundle.py`, `assetbundle_crypt`)
+
+### Fixed
+
+- Stale weapon story unlocks and incorrect post-evolution weapon state
+
 ## 2026-04-25
 
 ### Working

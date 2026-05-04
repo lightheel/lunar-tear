@@ -23,6 +23,7 @@ func main() {
 	octoURL := flag.String("octo-url", "", "Octo CDN base URL the client will use for assets (e.g. http://10.0.2.2:8080)")
 	authURL := flag.String("auth-url", "", "Auth server base URL for Facebook token validation (e.g. http://localhost:3000)")
 	adminListen := flag.String("admin-listen", "127.0.0.1:8082", "admin webhook listen address (host:port). Loopback by default; only binds when LUNAR_ADMIN_TOKEN is set.")
+	noRegister := flag.Bool("no-register", false, "Disallow new account registrations for clients, when present. Default = false")
 	flag.Parse()
 
 	if *octoURL == "" {
@@ -46,7 +47,7 @@ func main() {
 
 	userStore := sqlite.New(db, gametime.Now)
 
-	grpcServer := startGRPC(*listen, *publicAddr, *octoURL, *authURL, userStore, holder)
+	grpcServer := startGRPC(*listen, *publicAddr, *octoURL, *authURL, userStore, holder, *noRegister)
 
 	startAdmin(*adminListen, holder)
 

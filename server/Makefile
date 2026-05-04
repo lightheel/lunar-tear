@@ -30,6 +30,9 @@ build-auth:
 build-claim-account:
 	go build -o claim-account$(EXE) ./cmd/claim-account
 
+build-register-account:
+	go build -o register-account$(EXE) ./cmd/register-account
+
 build-dev:
 	go build -o bin/dev$(EXE) ./cmd/dev
 
@@ -57,4 +60,4 @@ ifndef UUID
 endif
 	go run ./cmd/import-snapshot --snapshot $(SNAPSHOT) --uuid $(UUID)
 
-.PHONY: proto build build-cdn build-auth build-import build-claim-account build-dev build-all clean dev migrate import
+.PHONY: proto build build-cdn build-auth build-import build-claim-account build-register-account build-dev build-all clean dev migrate import

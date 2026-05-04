@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 
+	"lunar-tear/server/internal/auth"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -15,6 +17,7 @@ func main() {
 	listen := flag.String("listen", "0.0.0.0:3000", "HTTP listen address (host:port)")
 	dbPath := flag.String("db", "db/auth.db", "SQLite database path for auth users")
 	secret := flag.String("secret", "", "HMAC secret for tokens (auto-generated if empty)")
+	noRegister := flag.Bool("no-register", false, "Disallow new account registrations for clients, when present. Default = false")
 	flag.Parse()
 
 	hmacSecret := []byte(*secret)
@@ -33,13 +36,13 @@ func main() {
 	}
 	defer db.Close()
 
-	store, err := NewAuthStore(db)
+	store, err := auth.NewAuthStore(db)
 	if err != nil {
 		log.Fatalf("init auth store: %v", err)
 	}
 
-	tok := NewTokenService(hmacSecret)
-	h := NewHandlers(store, tok)
+	tok := auth.NewTokenService(hmacSecret)
+	h := NewHandlers(store, tok, *noRegister)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.HandleOAuth)

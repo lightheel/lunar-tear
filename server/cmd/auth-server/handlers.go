@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"lunar-tear/server/internal/auth"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -39,12 +40,13 @@ var oauthRedirectTmpl = template.Must(template.New("oauthRedirect").Parse(
 `))
 
 type Handlers struct {
-	store *AuthStore
-	tok   *TokenService
+	store      *auth.AuthStore
+	tok        *auth.TokenService
+	noRegister bool
 }
 
-func NewHandlers(store *AuthStore, tok *TokenService) *Handlers {
-	return &Handlers{store: store, tok: tok}
+func NewHandlers(store *auth.AuthStore, tok *auth.TokenService, noRegister bool) *Handlers {
+	return &Handlers{store: store, tok: tok, noRegister: noRegister}
 }
 
 type loginPageData struct {
@@ -139,13 +141,18 @@ func (h *Handlers) oauthPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var user AuthUser
+	var user auth.AuthUser
 	var err error
 
 	switch action {
 	case "register":
+		if h.noRegister {
+			renderErr("This server does not accept user registrations.")
+			return
+		}
+
 		user, err = h.store.CreateUser(username, password)
-		if err == ErrUserExists {
+		if err == auth.ErrUserExists {
 			renderErr("Username is already taken.")
 			return
 		}
@@ -158,7 +165,7 @@ func (h *Handlers) oauthPost(w http.ResponseWriter, r *http.Request) {
 
 	case "login":
 		user, err = h.store.VerifyUser(username, password)
-		if err == ErrInvalidCreds {
+		if err == auth.ErrInvalidCreds {
 			renderErr("Invalid username or password.")
 			return
 		}
@@ -187,7 +194,7 @@ func (h *Handlers) oauthPost(w http.ResponseWriter, r *http.Request) {
 	fragment := url.Values{}
 	fragment.Set("access_token", token)
 	fragment.Set("token_type", "bearer")
-	fragment.Set("expires_in", strconv.FormatInt(int64(tokenTTL.Seconds()), 10))
+	fragment.Set("expires_in", strconv.FormatInt(int64(auth.TokenTTL.Seconds()), 10))
 	fragment.Set("signed_request", "0."+b64)
 	// iOS FBSDKLoginManager treats an empty granted_scopes set as a cancelled login
 	// (LoginManager.swift -> getSuccessResult -> getCancelledResult). Echo back the

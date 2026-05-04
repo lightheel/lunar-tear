@@ -1,4 +1,4 @@
-package main
+package auth
 
 import (
 	"crypto/hmac"
@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const tokenTTL = 24 * time.Hour
+const TokenTTL = 24 * time.Hour
 
 var (
 	ErrTokenInvalid = errors.New("invalid token")
@@ -38,7 +38,7 @@ func (t *TokenService) Generate(user AuthUser) (string, error) {
 		Sub:  user.ID,
 		Name: user.Username,
 		Iat:  now,
-		Exp:  now + int64(tokenTTL.Seconds()),
+		Exp:  now + int64(TokenTTL.Seconds()),
 	}
 
 	payload, err := json.Marshal(claims)

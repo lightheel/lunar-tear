@@ -15,12 +15,6 @@ func (s *SQLiteStore) CreateUser(uuid string, platform model.ClientPlatform) (in
 	}
 	defer tx.Rollback()
 
-	var existingId int64
-	err = tx.QueryRow(`SELECT user_id FROM users WHERE uuid = ?`, uuid).Scan(&existingId)
-	if err == nil {
-		return existingId, nil
-	}
-
 	nowMillis := s.clock().UnixMilli()
 
 	res, err := tx.Exec(`INSERT INTO users (uuid, player_id, os_type, platform_type, user_restriction_type,

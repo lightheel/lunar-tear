@@ -39,6 +39,7 @@ func startGRPC(
 		store.SessionRepository
 	},
 	holder *runtime.Holder,
+	noRegister bool,
 ) *grpc.Server {
 	lis, err := net.Listen("tcp", listenAddr)
 	if err != nil {
@@ -52,12 +53,16 @@ func startGRPC(
 		grpc.UnknownServiceHandler(interceptor.UnknownService),
 	)
 
-	registerServices(grpcServer, publicAddr, octoURL, authURL, userStore, holder)
+	registerServices(grpcServer, publicAddr, octoURL, authURL, userStore, holder, noRegister)
 
 	reflection.Register(grpcServer)
 
 	log.Printf("gRPC server listening on %s", lis.Addr())
 	log.Printf("public address: %s", publicAddr)
+
+	if noRegister {
+		log.Print("[!!WARNING!!] The gRPC server is running in NO-REGISTER mode. All new user registrations are denied, only existing accounts and auth-server logins are permitted.")
+	}
 
 	go func() {
 		if err := grpcServer.Serve(lis); err != nil {
@@ -77,12 +82,13 @@ func registerServices(
 		store.SessionRepository
 	},
 	holder *runtime.Holder,
+	noRegister bool,
 ) {
 	pubHost, pubPortStr, _ := net.SplitHostPort(publicAddr)
 	pubPort, _ := strconv.Atoi(pubPortStr)
 
 	pb.RegisterBannerServiceServer(srv, service.NewBannerServiceServer(holder))
-	pb.RegisterUserServiceServer(srv, service.NewUserServiceServer(userStore, userStore, authURL))
+	pb.RegisterUserServiceServer(srv, service.NewUserServiceServer(userStore, userStore, authURL, noRegister))
 	pb.RegisterBattleServiceServer(srv, service.NewBattleServiceServer(userStore, userStore))
 	pb.RegisterConfigServiceServer(srv, service.NewConfigServiceServer(pubHost, int32(pubPort), octoURL))
 	pb.RegisterDataServiceServer(srv, service.NewDataServiceServer(userStore, userStore))

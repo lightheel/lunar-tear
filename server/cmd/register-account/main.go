@@ -42,34 +42,30 @@ func main() {
 
 	userStore := sqlite.New(db, nil)
 
-	authdb, err := database.Open(*authdbPath)
+	authDb, err := database.Open(*authdbPath)
 	if err != nil {
 		log.Fatalf("open auth database: %v", err)
 	}
-	defer db.Close()
+	defer authDb.Close()
 
-	authStore, err := auth.NewAuthStore(authdb)
+	authStore, err := auth.NewAuthStore(authDb)
 	if err != nil {
 		log.Fatalf("init auth store: %v", err)
 	}
-
-	// Auth user check
 
 	userExists := authStore.UserExists(*name)
 	if userExists {
 		log.Fatal("Username is already taken")
 	}
 
-	// lunar-tear user
-
 	var userPlatform model.ClientPlatform
 
 	if *platform == "android" {
-		userPlatform.OsType = 2
-		userPlatform.PlatformType = 2
+		userPlatform.OsType = model.OsTypeAndroid
+		userPlatform.PlatformType = model.PlatformTypeGooglePlayStore
 	} else {
-		userPlatform.OsType = 1
-		userPlatform.PlatformType = 1
+		userPlatform.OsType = model.OsTypeIOS
+		userPlatform.PlatformType = model.PlatformTypeAppStore
 	}
 
 	userUuid := uuid.New().String()
@@ -80,8 +76,6 @@ func main() {
 	} else {
 		log.Fatalf("Register user in database: %v", err)
 	}
-
-	// Bind
 
 	authUser, err := authStore.CreateUser(*name, *password)
 	if err != nil {

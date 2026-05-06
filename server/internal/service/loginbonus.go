@@ -2,13 +2,17 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	pb "lunar-tear/server/gen/proto"
 	"lunar-tear/server/internal/gametime"
+	"lunar-tear/server/internal/masterdata"
 	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 
@@ -31,24 +35,25 @@ func (s *LoginBonusServiceServer) ReceiveStamp(ctx context.Context, req *emptypb
 	userId := CurrentUserId(ctx, s.users, s.sessions)
 	catalog := s.holder.Get().LoginBonus
 
-	s.users.UpdateUser(userId, func(user *store.UserState) {
+	user, err := s.users.LoadUser(userId)
+	if err != nil {
+		return nil, fmt.Errorf("load user: %w", err)
+	}
+
+	nextPage, nextStamp, reward, err := resolveNextStamp(catalog, user.LoginBonus)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Printf("[LoginBonusService] bonusId=%d page %d->%d stamp %d->%d possType=%d possId=%d count=%d (-> gift box)",
+		user.LoginBonus.LoginBonusId,
+		user.LoginBonus.CurrentPageNumber, nextPage,
+		user.LoginBonus.CurrentStampNumber, nextStamp,
+		reward.PossessionType, reward.PossessionId, reward.Count)
+
+	s.users.UpdateUser(userId, func(u *store.UserState) {
 		now := gametime.NowMillis()
-		nextStamp := user.LoginBonus.CurrentStampNumber + 1
-
-		reward, ok := catalog.LookupStampReward(
-			user.LoginBonus.LoginBonusId,
-			user.LoginBonus.CurrentPageNumber,
-			nextStamp,
-		)
-		if !ok {
-			log.Fatalf("[LoginBonusService] no reward found for bonusId=%d page=%d stamp=%d",
-				user.LoginBonus.LoginBonusId, user.LoginBonus.CurrentPageNumber, nextStamp)
-		}
-
-		log.Printf("[LoginBonusService] stamp %d -> possType=%d possId=%d count=%d (-> gift box)",
-			nextStamp, reward.PossessionType, reward.PossessionId, reward.Count)
-
-		user.Gifts.NotReceived = append(user.Gifts.NotReceived, store.NotReceivedGiftState{
+		u.Gifts.NotReceived = append(u.Gifts.NotReceived, store.NotReceivedGiftState{
 			GiftCommon: store.GiftCommonState{
 				PossessionType: reward.PossessionType,
 				PossessionId:   reward.PossessionId,
@@ -58,11 +63,42 @@ func (s *LoginBonusServiceServer) ReceiveStamp(ctx context.Context, req *emptypb
 			ExpirationDatetime: now + int64(30*24*time.Hour/time.Millisecond),
 			UserGiftUuid:       uuid.New().String(),
 		})
-		user.Notifications.GiftNotReceiveCount = int32(len(user.Gifts.NotReceived))
-		user.LoginBonus.CurrentStampNumber = nextStamp
-		user.LoginBonus.LatestRewardReceiveDatetime = now
-		user.LoginBonus.LatestVersion = now
+		u.Notifications.GiftNotReceiveCount = int32(len(u.Gifts.NotReceived))
+		u.LoginBonus.CurrentPageNumber = nextPage
+		u.LoginBonus.CurrentStampNumber = nextStamp
+		u.LoginBonus.LatestRewardReceiveDatetime = now
+		u.LoginBonus.LatestVersion = now
 	})
 
 	return &pb.ReceiveStampResponse{}, nil
+}
+
+func resolveNextStamp(catalog *masterdata.LoginBonusCatalog, lb store.UserLoginBonusState) (nextPage, nextStamp int32, reward masterdata.LoginBonusReward, err error) {
+	bonusId := lb.LoginBonusId
+	curPage := lb.CurrentPageNumber
+	curStamp := lb.CurrentStampNumber
+
+	nextPage = curPage
+	nextStamp = curStamp + 1
+	var ok bool
+	reward, ok = catalog.LookupStampReward(bonusId, nextPage, nextStamp)
+	if !ok {
+		nextPage = curPage + 1
+		nextStamp = 1
+		total := catalog.TotalPageCount(bonusId)
+		if total > 0 && nextPage > total {
+			err = status.Errorf(codes.FailedPrecondition,
+				"login bonus %d exhausted (page %d stamp %d is the last)",
+				bonusId, curPage, curStamp)
+			return
+		}
+		reward, ok = catalog.LookupStampReward(bonusId, nextPage, nextStamp)
+		if !ok {
+			err = status.Errorf(codes.FailedPrecondition,
+				"no reward found for login bonus %d page %d stamp %d",
+				bonusId, nextPage, nextStamp)
+			return
+		}
+	}
+	return
 }

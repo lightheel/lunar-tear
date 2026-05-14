@@ -2,6 +2,7 @@ package masterdata
 
 import (
 	"fmt"
+	"log"
 
 	"lunar-tear/server/internal/model"
 	"lunar-tear/server/internal/utils"
@@ -32,8 +33,9 @@ func BuildExpThresholds(paramMapRows []EntityMNumericalParameterMap, mapId int32
 }
 
 type MaterialCatalog struct {
-	All    map[int32]EntityMMaterial
-	ByType map[model.MaterialType]map[int32]EntityMMaterial
+	All        map[int32]EntityMMaterial
+	ByType     map[model.MaterialType]map[int32]EntityMMaterial
+	SaleObtain map[int32][]EntityMMaterialSaleObtainPossession
 }
 
 func LoadMaterialCatalog() (*MaterialCatalog, error) {
@@ -43,8 +45,9 @@ func LoadMaterialCatalog() (*MaterialCatalog, error) {
 	}
 
 	catalog := &MaterialCatalog{
-		All:    make(map[int32]EntityMMaterial, len(rows)),
-		ByType: make(map[model.MaterialType]map[int32]EntityMMaterial),
+		All:        make(map[int32]EntityMMaterial, len(rows)),
+		ByType:     make(map[model.MaterialType]map[int32]EntityMMaterial),
+		SaleObtain: make(map[int32][]EntityMMaterialSaleObtainPossession),
 	}
 	for _, row := range rows {
 		catalog.All[row.MaterialId] = row
@@ -54,5 +57,15 @@ func LoadMaterialCatalog() (*MaterialCatalog, error) {
 		}
 		catalog.ByType[mt][row.MaterialId] = row
 	}
+
+	saleRows, err := utils.ReadTable[EntityMMaterialSaleObtainPossession]("m_material_sale_obtain_possession")
+	if err != nil {
+		log.Printf("material catalog: sale-obtain table unavailable, side rewards on sell will be skipped: %v", err)
+	} else {
+		for _, row := range saleRows {
+			catalog.SaleObtain[row.MaterialSaleObtainPossessionId] = append(catalog.SaleObtain[row.MaterialSaleObtainPossessionId], row)
+		}
+	}
+
 	return catalog, nil
 }

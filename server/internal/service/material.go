@@ -6,6 +6,7 @@ import (
 	"log"
 
 	pb "lunar-tear/server/gen/proto"
+	"lunar-tear/server/internal/model"
 	"lunar-tear/server/internal/runtime"
 	"lunar-tear/server/internal/store"
 )
@@ -52,6 +53,14 @@ func (s *MaterialServiceServer) Sell(ctx context.Context, req *pb.MaterialSellRe
 			gold := mat.SellPrice * item.Count
 			totalGold += gold
 			log.Printf("[MaterialService] Sell: materialId=%d x%d -> %d gold", item.MaterialId, item.Count, gold)
+
+			if mat.MaterialSaleObtainPossessionId != 0 {
+				for _, row := range catalog.SaleObtain[mat.MaterialSaleObtainPossessionId] {
+					grantCount := row.Count * item.Count
+					store.GrantPossession(user, model.PossessionType(row.PossessionType), row.PossessionId, grantCount)
+					log.Printf("[MaterialService] Sell: materialId=%d x%d -> SaleObtain type=%d id=%d +%d", item.MaterialId, item.Count, row.PossessionType, row.PossessionId, grantCount)
+				}
+			}
 		}
 
 		if totalGold > 0 {

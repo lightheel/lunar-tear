@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-05-16
+
+### Working
+
+- `--no-register` flag and `register-account` CLI tool
+- Database backup support in the wizard
+- Subjugation Quests — rewards, battle report, and triple-deck preset persistence
+- `MaterialSaleObtainPossession` item grants when selling materials
+- Memoir protect / unprotect
+- Effect item usage (`UseEffectItem`)
+- Recollections of Dusk
+
+### Fixed
+
+- Login bonus
+- Main quest replay (Map replay)
+- Weapon awaken level cap
+- Gacha pool overhaul
+- Quest mission rewards
+- Menu-pick quest start — wrong state from replay flow, black screen on quests with no difficulty, and normal-difficulty handling
+
 ## 2026-05-02
 
 ### Working

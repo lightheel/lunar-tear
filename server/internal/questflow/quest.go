@@ -233,6 +233,17 @@ func (h *QuestHandler) finalizeChainPreviousQuest(user *store.UserState, questId
 	log.Printf("[HandleMainQuestSceneProgress] finalized chain-previous quest %d (cleared)", questId)
 }
 
+func restoreClearedAfterRetire(user *store.UserState, questId int32, isRetired bool) {
+	if !isRetired {
+		return
+	}
+	qs := user.Quests[questId]
+	if qs.ClearCount > 0 && qs.QuestStateType == model.UserQuestStateTypeActive {
+		qs.QuestStateType = model.UserQuestStateTypeCleared
+		user.Quests[questId] = qs
+	}
+}
+
 func (h *QuestHandler) HandleQuestFinish(user *store.UserState, questId int32, isRetired, isAnnihilated bool, nowMillis int64) FinishOutcome {
 	quest, ok := h.QuestById[questId]
 	if !ok {
@@ -260,17 +271,7 @@ func (h *QuestHandler) HandleQuestFinish(user *store.UserState, questId int32, i
 		store.RecoverStamina(user, refund*1000, maxMillis, nowMillis)
 	}
 
-	// On retire of a previously-cleared quest (cage Menu Pick replay or
-	// Map Play replay), HandleQuestStart marked QuestStateType=Active for
-	// the run. With applyQuestVictory skipped on retire, that Active sticks
-	// and the cage UI shows the quest as locked. Restore Cleared.
-	if isRetired {
-		qs := user.Quests[questId]
-		if qs.ClearCount > 0 && qs.QuestStateType == model.UserQuestStateTypeActive {
-			qs.QuestStateType = model.UserQuestStateTypeCleared
-			user.Quests[questId] = qs
-		}
-	}
+	restoreClearedAfterRetire(user, questId, isRetired)
 
 	user.MainQuest.ProgressQuestSceneId = 0
 	user.MainQuest.ProgressHeadQuestSceneId = 0

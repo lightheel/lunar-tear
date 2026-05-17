@@ -51,6 +51,8 @@ func (h *QuestHandler) HandleExtraQuestFinish(user *store.UserState, questId int
 		store.RecoverStamina(user, refund*1000, maxMillis, nowMillis)
 	}
 
+	restoreClearedAfterRetire(user, questId, isRetired)
+
 	user.ExtraQuest.CurrentQuestId = 0
 	user.ExtraQuest.CurrentQuestSceneId = 0
 	user.ExtraQuest.HeadQuestSceneId = 0

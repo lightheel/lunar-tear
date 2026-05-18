@@ -259,7 +259,12 @@ func (h *QuestHandler) HandleQuestFinish(user *store.UserState, questId int32, i
 	if !isRetired {
 		h.applyQuestVictory(user, questId, &outcome, nowMillis, wasReplay)
 
-		if isMainQuestPlayable(quest) && !wasMenuReplay {
+		// A replay-flow finish must NOT move the MainFlow scene pointer: the
+		// finished quest is a replay-variant (30000+) with no chapter, so a
+		// replay scene left in CurrentQuestSceneId makes the client world map's
+		// CalculatorWorldMap.GetCurrentSeasonId resolve chapter 0 and NRE. The
+		// replay's own position is tracked in ReplayFlowCurrentQuestSceneId.
+		if isMainQuestPlayable(quest) && !wasMenuReplay && !wasReplay {
 			lastSceneId := h.getLastMainFlowSceneId(questId)
 			h.advanceMainFlowScene(user, questId, lastSceneId)
 		}

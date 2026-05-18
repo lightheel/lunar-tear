@@ -233,7 +233,10 @@ func (h *QuestHandler) HandleMainQuestSceneProgress(user *store.UserState, quest
 			user.MainQuest.CurrentQuestFlowType = int32(model.QuestFlowTypeSubFlow)
 			user.MainQuest.ProgressQuestFlowType = int32(model.QuestFlowTypeSubFlow)
 		}
-	} else {
+	} else if !isReplay {
+		// Background/non-playable quest: advance the MainFlow pointer — but not
+		// during a replay, where the isReplay block below tracks the ReplayFlow
+		// scene and the MainFlow pointer must stay on real main-story progress.
 		user.MainQuest.CurrentQuestSceneId = questSceneId
 		if h.isSceneAhead(questSceneId, user.MainQuest.HeadQuestSceneId) {
 			user.MainQuest.HeadQuestSceneId = questSceneId
